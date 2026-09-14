@@ -1,6 +1,7 @@
 import Phaser from 'phaser';
 import './style.css';
 import { PLAYER_REACTION, createPlayerState, canPlayerAct, applyPlayerHit, advancePlayerState } from './player-state.js';
+import { enemyProfile, enemyCanGuard, enemyHitResponse, turnEnemyToward } from './enemy-types.js';
 
 const WIDTH = 960;
 const HEIGHT = 540;
@@ -28,7 +29,7 @@ const ENCOUNTERS = [
       [
         { x: 930, y: 450 },
         { x: 1110, y: 335 },
-        { x: 1280, y: 455 },
+        { x: 1280, y: 455, kind: 'spartan' },
         { x: 1410, y: 365 },
       ],
     ],
@@ -42,15 +43,15 @@ const ENCOUNTERS = [
       [
         { x: 1760, y: 350 },
         { x: 1920, y: 445 },
-        { x: 2100, y: 365 },
+        { x: 2100, y: 365, kind: 'spartan' },
         { x: 2250, y: 440 },
       ],
       [
         { x: 1690, y: 410 },
-        { x: 1840, y: 335 },
+        { x: 1840, y: 335, kind: 'spartan' },
         { x: 1990, y: 455 },
         { x: 2160, y: 350 },
-        { x: 2370, y: 420 },
+        { x: 2370, y: 420, kind: 'spartan' },
       ],
     ],
   },
@@ -62,15 +63,15 @@ const ENCOUNTERS = [
     waves: [
       [
         { x: 2670, y: 345 },
-        { x: 2820, y: 455 },
+        { x: 2820, y: 455, kind: 'spartan' },
         { x: 3000, y: 365 },
-        { x: 3170, y: 435 },
+        { x: 3170, y: 435, kind: 'spartan' },
       ],
       [
         { x: 2610, y: 420 },
-        { x: 2760, y: 345 },
+        { x: 2760, y: 345, kind: 'spartan' },
         { x: 2920, y: 455 },
-        { x: 3080, y: 340 },
+        { x: 3080, y: 340, kind: 'spartan' },
         { x: 3250, y: 430 },
         { x: 3370, y: 375 },
       ],
@@ -86,6 +87,7 @@ class PrototypeScene extends Phaser.Scene {
   init() {
     this.playerState = createPlayerState();
     this.pendingWaveSpawns = 0;
+    this.spartanIntroduced = false;
     this.enemies = [];
     this.attackCooldown = 0;
     this.comboCount = 0;
@@ -270,7 +272,7 @@ class PrototypeScene extends Phaser.Scene {
   }
 
   createUi() {
-    this.add.text(24, 18, 'GBF 狂扁小朋友 原型 v0.6', {
+    this.add.text(24, 18, 'GBF 狂扁小朋友 原型 v0.7', {
       fontSize: '24px',
       color: '#ffffff',
       stroke: '#000000',
@@ -282,6 +284,10 @@ class PrototypeScene extends Phaser.Scene {
       color: '#ffffff',
       stroke: '#000000',
       strokeThickness: 4,
+    }).setScrollFactor(0).setDepth(30000);
+
+    this.enemyHint = this.add.text(24, 76, '', {
+      fontSize: '15px', color: '#ffe8ad', stroke: '#302315', strokeThickness: 4,
     }).setScrollFactor(0).setDepth(30000);
 
     this.statusText = this.add.text(WIDTH - 24, 18, '', {
@@ -336,7 +342,8 @@ class PrototypeScene extends Phaser.Scene {
   }
 
   makeTextures() {
-    if (this.textures.exists('bii') && this.textures.exists('enemy')) return;
+    if (this.textures.exists('bii') && this.textures.exists('enemy')
+      && this.textures.exists('enemy-spartan')) return;
     const g = this.add.graphics();
 
     g.fillStyle(0x2454a6, 1);
@@ -357,6 +364,25 @@ class PrototypeScene extends Phaser.Scene {
     g.fillStyle(0x3a2020, 1);
     g.fillCircle(30, 16, 17);
     g.generateTexture('enemy', 60, 76);
+    g.clear();
+
+    // A gold helmet and a shield on the facing side distinguish the defender.
+    g.fillStyle(0x355d75, 1);
+    g.fillRoundedRect(8, 20, 42, 48, 7);
+    g.fillStyle(0xe2b963, 1);
+    g.fillRoundedRect(10, 4, 38, 25, 6);
+    g.fillStyle(0x253747, 1);
+    g.fillRect(15, 14, 27, 6);
+    g.fillStyle(0xc34d48, 1);
+    g.fillRect(25, 0, 9, 9);
+    g.fillStyle(0x254157, 1);
+    g.fillRect(11, 64, 13, 12);
+    g.fillRect(33, 64, 13, 12);
+    g.fillStyle(0xe2b963, 1);
+    g.fillRoundedRect(38, 25, 21, 43, 7);
+    g.fillStyle(0x487a91, 1);
+    g.fillRoundedRect(42, 29, 13, 33, 5);
+    g.generateTexture('enemy-spartan', 60, 76);
     g.destroy();
   }
 
@@ -576,19 +602,27 @@ class PrototypeScene extends Phaser.Scene {
       this.time.delayedCall(enemyIndex * 120, () => {
         if (this.gameOver || this.stageComplete || this.activeEncounter !== encounter
           || this.currentWaveIndex !== index) return;
-        this.spawnEnemy(pos.x, pos.y, enemyIndex);
+        this.spawnEnemy(pos.x, pos.y, enemyIndex, pos.kind);
         this.pendingWaveSpawns -= 1;
       });
     });
   }
-  spawnEnemy(x, y, index = 0) {
-    const enemy = this.physics.add.sprite(x, y, 'enemy');
+  spawnEnemy(x, y, index = 0, kind = 'raider') {
+    const profile = enemyProfile(kind);
+    const enemy = this.physics.add.sprite(x, y, profile.texture);
+    enemy.kind = kind;
+    enemy.facing = Math.sign(this.player.x - x) || -1;
+    enemy.turnAt = 0;
+    enemy.turnDirection = 0;
+    enemy.guardBrokenUntil = 0;
+    enemy.recoveryUntil = 0;
+    enemy.setFlipX(enemy.facing < 0);
     enemy.defeated = false;
     enemy.attackCount = 0;
     enemy.pendingAttack = null;
-    enemy.hp = 6;
-    enemy.maxHp = 6;
-    enemy.speed = 52 + (index % 4) * 7;
+    enemy.hp = profile.hp;
+    enemy.maxHp = profile.hp;
+    enemy.speed = profile.speed + (index % 4) * profile.speedVariation;
     enemy.stunUntil = 0;
     enemy.knockedDownUntil = 0;
     enemy.attackReadyAt = this.time.now + 700 + index * 120;
@@ -600,7 +634,42 @@ class PrototypeScene extends Phaser.Scene {
     enemy.setAlpha(0);
 
     this.tweens.add({ targets: enemy, alpha: 1, duration: 180 });
+    enemy.nameTag = this.add.text(x, y - 63, profile.name, {
+      fontSize: '13px', color: profile.guard ? '#ffe5a3' : '#ffffff',
+      stroke: '#30251c', strokeThickness: 3,
+    }).setOrigin(0.5);
+    enemy.healthBg = this.add.rectangle(x - 23, y - 48, 46, 5, 0x25212b).setOrigin(0, 0.5);
+    enemy.healthBar = this.add.rectangle(x - 22, y - 48, 44, 3, profile.guard ? 0xe2b963 : 0xf49b80)
+      .setOrigin(0, 0.5);
+    enemy.once('destroy', () => this.destroyEnemyUi(enemy));
     this.enemies.push(enemy);
+    if (kind === 'spartan' && !this.spartanIntroduced) {
+      this.spartanIntroduced = true;
+      this.enemyHint.setText('持盾斯巴达登场！K 重击破防 · 绕背攻击 · L 抓取');
+    }
+  }
+
+  destroyEnemyUi(enemy) {
+    ['nameTag', 'healthBg', 'healthBar'].forEach((key) => {
+      enemy[key]?.destroy();
+      enemy[key] = null;
+    });
+  }
+
+  updateEnemyUi(time) {
+    this.enemies.forEach((enemy) => {
+      if (!this.isEnemyAlive(enemy) || !enemy.nameTag) return;
+      const profile = enemyProfile(enemy.kind);
+      const guardLabel = enemyCanGuard(enemy, time) ? ' · 持盾'
+        : enemy.guardBrokenUntil > time ? ' · 破防' : '';
+      enemy.nameTag.setText(profile.name + guardLabel).setPosition(enemy.x, enemy.y - 63);
+      enemy.healthBg.setPosition(enemy.x - 23, enemy.y - 48);
+      enemy.healthBar.setPosition(enemy.x - 22, enemy.y - 48);
+      enemy.healthBar.width = 44 * Phaser.Math.Clamp(enemy.hp / enemy.maxHp, 0, 1);
+      [enemy.nameTag, enemy.healthBg, enemy.healthBar].forEach((item) => {
+        item.setDepth(enemy.y + 30).setAlpha(enemy.alpha);
+      });
+    });
   }
 
   completeEncounter() {
@@ -670,6 +739,7 @@ class PrototypeScene extends Phaser.Scene {
   }
 
   updateUi(time) {
+    this.updateEnemyUi(time);
     const alive = this.enemies.filter((enemy) => this.isEnemyAlive(enemy)).length;
     const rageActive = time < this.rageUntil;
     const rageLabel = rageActive
@@ -1045,6 +1115,16 @@ class PrototypeScene extends Phaser.Scene {
       const inFront = Math.sign(dx || this.player.facing) === this.player.facing;
       if (!inFront || Math.abs(dx) > config.range || dy > 58) return;
 
+      const response = enemyHitResponse(enemy, this.player.x, config.type, this.time.now, this.isRageActive());
+      if (response === 'block') {
+        this.showEnemyFeedback(enemy, '格挡！', '#b7e9ff');
+        this.spawnHitFlash(enemy.x + enemy.facing * 26, enemy.y, false, 18);
+        return;
+      }
+      if (response === 'break') {
+        enemy.guardBrokenUntil = this.time.now + 1600;
+        this.showEnemyFeedback(enemy, '破防！', '#ffe28a');
+      }
       this.cancelEnemyAttack(enemy);
       hitCount += 1;
       enemy.hp -= damage;
@@ -1074,6 +1154,16 @@ class PrototypeScene extends Phaser.Scene {
         config.shake ?? (isBig ? 0.007 : 0.0025),
       );
     }
+  }
+
+  showEnemyFeedback(enemy, message, color) {
+    const label = this.add.text(enemy.x, enemy.y - 86, message, {
+      fontSize: '21px', fontStyle: 'bold', color, stroke: '#302315', strokeThickness: 4,
+    }).setOrigin(0.5).setDepth(10000);
+    this.tweens.add({
+      targets: label, y: enemy.y - 115, alpha: 0, duration: 650,
+      onComplete: () => label.destroy(),
+    });
   }
 
   spawnHitFlash(x, y, big = false, width = null) {
@@ -1118,6 +1208,7 @@ class PrototypeScene extends Phaser.Scene {
     if (!this.isEnemyAlive(enemy)) return;
     enemy.defeated = true;
     this.cancelEnemyAttack(enemy);
+    this.destroyEnemyUi(enemy);
     enemy.setVelocity(0, 0);
     enemy.setAngularVelocity(0);
     if (this.grabbedEnemy === enemy) this.grabbedEnemy = null;
@@ -1168,19 +1259,26 @@ class PrototypeScene extends Phaser.Scene {
         return;
       }
 
+      if (time < enemy.recoveryUntil) {
+        enemy.setVelocity(0, 0);
+        return;
+      }
+
       const dx = this.player.x - enemy.x;
       const dy = this.player.y - enemy.y;
+      turnEnemyToward(enemy, this.player.x, time);
+      enemy.setFlipX(enemy.facing < 0);
       const distance = Phaser.Math.Distance.Between(
         enemy.x, enemy.y, this.player.x, this.player.y,
       );
 
-      if (distance > 78) {
+      // Align lanes before swinging, even if the diagonal distance is small.
+      if (distance > 78 || Math.abs(dy) > 28) {
         const direction = new Phaser.Math.Vector2(dx, dy).normalize();
         enemy.setVelocity(direction.x * enemy.speed, direction.y * enemy.speed);
-        enemy.setFlipX(dx < 0);
       } else {
         enemy.setVelocity(0, 0);
-        if (time >= enemy.attackReadyAt) this.enemyAttack(enemy);
+        if (time >= enemy.attackReadyAt && dx * enemy.facing >= 0) this.enemyAttack(enemy);
       }
     });
   }
@@ -1220,27 +1318,32 @@ class PrototypeScene extends Phaser.Scene {
       || enemy.grabbed || enemy.pendingAttack) return;
     if (!canPlayerAct(this.playerState)) return;
 
-    const direction = Math.sign(this.player.x - enemy.x) || 1;
-    const heavy = (enemy.attackCount + 1) % 3 === 0;
-    const range = heavy ? 110 : 88;
-    const halfHeight = heavy ? 40 : 32;
+    if (this.time.now < enemy.stunUntil || this.time.now < enemy.knockedDownUntil
+      || this.time.now < enemy.thrownUntil || this.time.now < enemy.recoveryUntil) return;
+    const profile = enemyProfile(enemy.kind);
+    const direction = profile.guard ? enemy.facing : Math.sign(this.player.x - enemy.x) || 1;
+    if ((this.player.x - enemy.x) * direction < 0) return;
+    const heavy = profile.guard || (enemy.attackCount + 1) % 3 === 0;
+    const range = profile.guard ? 100 : heavy ? 110 : 88;
+    const halfHeight = profile.guard ? 36 : heavy ? 40 : 32;
     const color = heavy ? 0xffc857 : 0xff6666;
     const marker = this.add.rectangle(
       enemy.x + direction * range / 2, enemy.y, range, halfHeight * 2, color, 0.16,
     ).setStrokeStyle(2, color, 0.9).setDepth(enemy.y - 1);
-    const label = this.add.text(enemy.x, enemy.y - 64, heavy ? '重击！' : '！', {
+    const label = this.add.text(enemy.x, enemy.y - 90, profile.guard ? '盾击！' : heavy ? '重击！' : '！', {
       fontSize: heavy ? '20px' : '26px', color: heavy ? '#ffe28a' : '#ff9b9b',
       stroke: '#3c2020', strokeThickness: 4,
     }).setOrigin(0.5).setDepth(enemy.y + 1);
 
     enemy.attackCount += 1;
+    enemy.facing = direction;
     enemy.setVelocity(0, 0);
     enemy.setFlipX(direction < 0);
     enemy.pendingAttack = {
       x: enemy.x, y: enemy.y, direction, heavy, range, halfHeight,
-      hitAt: this.time.now + (heavy ? 560 : 340), marker, label,
+      hitAt: this.time.now + (heavy ? profile.heavyWindup : profile.lightWindup), marker, label,
     };
-    enemy.attackReadyAt = enemy.pendingAttack.hitAt + Phaser.Math.Between(950, 1450);
+    enemy.attackReadyAt = enemy.pendingAttack.hitAt + Phaser.Math.Between(profile.cooldownMin, profile.cooldownMax);
   }
 
   cancelEnemyAttack(enemy) {
@@ -1255,6 +1358,7 @@ class PrototypeScene extends Phaser.Scene {
     if (!attack) return;
     this.cancelEnemyAttack(enemy);
     if (this.gameOver || this.stageComplete || !this.isEnemyAlive(enemy) || enemy.grabbed) return;
+    enemy.recoveryUntil = this.time.now + enemyProfile(enemy.kind).recovery;
 
     const flash = this.add.rectangle(
       attack.x + attack.direction * attack.range / 2, attack.y,

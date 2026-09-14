@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import * as playerState from '../src/player-state.js';
+import * as enemyTypes from '../src/enemy-types.js';
 
 // Exercise the production scene with small engine doubles; no DOM or renderer.
 // Actual Phaser bundling is checked separately by npm run build.
@@ -31,8 +32,9 @@ const Phaser = {
     Vector2,
   },
 };
-const Scene = new Function('Phaser', ...Object.keys(playerState), source)(
-  Phaser, ...Object.values(playerState),
+const dependencies = { ...playerState, ...enemyTypes };
+const Scene = new Function('Phaser', ...Object.keys(dependencies), source)(
+  Phaser, ...Object.values(dependencies),
 );
 
 function sprite(x = 200, y = 400) {
@@ -304,4 +306,124 @@ test('stage completion blocks double-tap dash and allows R to replay', () => {
   s.keys.R._justDown = true;
   s.update(1100, 16);
   assert.equal(restarts, 1);
+});
+
+function spartan(x = 240) {
+  return Object.assign(enemy(x), {
+    kind: 'spartan', hp: 10, maxHp: 10, facing: -1,
+    guardBrokenUntil: 0, recoveryUntil: 0,
+  });
+}
+
+test('a blocked punch deals no damage or rage and cannot interrupt a shield bash', () => {
+  const s = scene();
+  const e = spartan();
+  s.enemies = [e];
+  s.enemyAttack(e);
+  const warning = e.pendingAttack;
+  s.doAttack({ type: 'light1', damage: 1, range: 82, knockback: 95, stun: 165, cooldown: 175 });
+  assert.equal(e.hp, 10);
+  assert.equal(s.rage, 0);
+  assert.equal(e.pendingAttack, warning);
+});
+
+test('a heavy strike breaks the shield, interrupts the bash and allows follow-up hits', () => {
+  const s = scene();
+  const e = spartan();
+  s.enemies = [e];
+  s.enemyAttack(e);
+  s.doAttack({ type: 'heavy', damage: 2, range: 108, knockback: 310, stun: 400, cooldown: 470, knockdown: true });
+  assert.equal(e.hp, 8);
+  assert.equal(e.pendingAttack, null);
+  assert.equal(e.guardBrokenUntil, 2600);
+  assert.ok(e.knockedDownUntil > s.time.now);
+  s.time.now = 1500;
+  s.doAttack({ type: 'light1', damage: 1, range: 82, knockback: 95, stun: 165, cooldown: 175 });
+  assert.equal(e.hp, 7);
+});
+
+test('a rear punch bypasses the shield and interrupts the bash', () => {
+  const s = scene();
+  const e = spartan();
+  s.enemies = [e];
+  s.enemyAttack(e);
+  s.player.x = 280;
+  s.player.facing = -1;
+  s.doAttack({ type: 'light1', damage: 1, range: 82, knockback: 95, stun: 165, cooldown: 175 });
+  assert.equal(e.hp, 9);
+  assert.equal(e.pendingAttack, null);
+});
+
+test('grabbing and throwing a guarding defender remains a valid counter', () => {
+  const s = scene();
+  const e = spartan();
+  s.enemies = [e];
+  s.enemyAttack(e);
+  s.tryGrabEnemy();
+  assert.equal(s.grabbedEnemy, e);
+  assert.equal(e.pendingAttack, null);
+  s.throwGrabbedEnemy();
+  assert.equal(s.grabbedEnemy, null);
+  assert.ok(e.thrownUntil > s.time.now);
+  assert.equal(e.body.enable, true);
+});
+
+test('a missed shield bash has a punishable recovery window', () => {
+  const s = scene();
+  const e = spartan();
+  s.enemies = [e];
+  s.enemyAttack(e);
+  assert.equal(e.pendingAttack.hitAt, 1740);
+  s.player.y = 470;
+  s.time.now = 1740;
+  s.updateEnemies(1740);
+  assert.equal(s.player.hp, 10);
+  assert.equal(e.recoveryUntil, 2390);
+  assert.equal(enemyTypes.enemyCanGuard(e, 1740), false);
+  s.time.now = 1900;
+  s.updateEnemies(1900);
+  assert.equal(e.body.velocity.x, 0);
+  assert.equal(e.body.velocity.y, 0);
+  assert.equal(enemyTypes.enemyCanGuard(e, 2390), true);
+});
+
+test('encounters introduce one defender before increasing mixed-wave pressure', () => {
+  const s = scene();
+  const counts = s.encounters.flatMap((encounter) => encounter.waves)
+    .map((wave) => wave.filter((pos) => pos.kind === 'spartan').length);
+  assert.deepEqual(counts, [0, 1, 1, 2, 2, 2]);
+  s.activeEncounter = s.encounters[0];
+  const spawned = [];
+  s.spawnEnemy = (_x, _y, _index, kind = 'raider') => spawned.push(kind);
+  s.spawnEncounterWave(1);
+  s.time.calls.forEach(({ callback }) => callback());
+  assert.equal(spawned.filter((kind) => kind === 'spartan').length, 1);
+});
+
+test('enemy UI is destroyed together with a defeated defender', () => {
+  const s = scene();
+  const e = spartan();
+  const ui = [sprite(), sprite(), sprite()];
+  [e.nameTag, e.healthBg, e.healthBar] = ui;
+  s.defeatEnemy(e);
+  assert.ok(ui.every((item) => !item.active));
+  assert.equal(e.nameTag, null);
+  s.destroyEnemyUi(e);
+});
+
+test('a thrown raider can knock down a guarding defender and hit it only once', () => {
+  const s = scene();
+  const thrown = enemy(220);
+  thrown.thrownUntil = 1600;
+  thrown.throwHitTargets = new Set();
+  thrown.setVelocity(650, 0);
+  const target = spartan(250);
+  s.enemies = [thrown, target];
+  s.enemyAttack(target);
+  s.updateThrownEnemies(1000);
+  assert.equal(target.hp, 8);
+  assert.equal(target.pendingAttack, null);
+  assert.ok(target.knockedDownUntil > 1000);
+  s.updateThrownEnemies(1000);
+  assert.equal(target.hp, 8);
 });
