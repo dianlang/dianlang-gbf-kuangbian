@@ -103,6 +103,16 @@ class PrototypeScene extends Phaser.Scene {
     this.leftBarrier = null;
     this.rightBarrier = null;
   }
+  preload() {
+    this.load.spritesheet('bii-idle', '/characters/bii/idle.png', {
+      frameWidth: 256,
+      frameHeight: 256,
+    });
+    this.load.spritesheet('bii-walk', '/characters/bii/walk.png', {
+      frameWidth: 256,
+      frameHeight: 256,
+    });
+  }
 
   preload() {
     this.load.spritesheet('bii-idle', '/characters/bii/idle.png', {
