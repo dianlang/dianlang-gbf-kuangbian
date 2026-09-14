@@ -3,17 +3,82 @@ import './style.css';
 
 const WIDTH = 960;
 const HEIGHT = 540;
+const WORLD_WIDTH = 3600;
 const FLOOR_TOP = 315;
 const FLOOR_BOTTOM = 500;
 const COMBO_WINDOW = 520;
 const RAGE_DURATION = 10000;
+
+const ENCOUNTERS = [
+  {
+    id: 'deck-a',
+    name: '甲板前段',
+    triggerX: 880,
+    cameraX: 560,
+    waves: [
+      [
+        { x: 1010, y: 350 },
+        { x: 1160, y: 430 },
+        { x: 1320, y: 370 },
+      ],
+      [
+        { x: 930, y: 450 },
+        { x: 1110, y: 335 },
+        { x: 1280, y: 455 },
+        { x: 1410, y: 365 },
+      ],
+    ],
+  },
+  {
+    id: 'deck-b',
+    name: '主桅附近',
+    triggerX: 1900,
+    cameraX: 1570,
+    waves: [
+      [
+        { x: 1760, y: 350 },
+        { x: 1920, y: 445 },
+        { x: 2100, y: 365 },
+        { x: 2250, y: 440 },
+      ],
+      [
+        { x: 1690, y: 410 },
+        { x: 1840, y: 335 },
+        { x: 1990, y: 455 },
+        { x: 2160, y: 350 },
+        { x: 2370, y: 420 },
+      ],
+    ],
+  },
+  {
+    id: 'deck-c',
+    name: '船首通道',
+    triggerX: 2840,
+    cameraX: 2510,
+    waves: [
+      [
+        { x: 2670, y: 345 },
+        { x: 2820, y: 455 },
+        { x: 3000, y: 365 },
+        { x: 3170, y: 435 },
+      ],
+      [
+        { x: 2610, y: 420 },
+        { x: 2760, y: 345 },
+        { x: 2920, y: 455 },
+        { x: 3080, y: 340 },
+        { x: 3250, y: 430 },
+        { x: 3370, y: 375 },
+      ],
+    ],
+  },
+];
 
 class PrototypeScene extends Phaser.Scene {
   constructor() {
     super('PrototypeScene');
     this.enemies = [];
     this.attackCooldown = 0;
-    this.waveCleared = false;
     this.comboCount = 0;
     this.comboExpireAt = 0;
     this.lastHorizontalTap = { left: -9999, right: -9999 };
@@ -24,47 +89,28 @@ class PrototypeScene extends Phaser.Scene {
     this.gameOver = false;
     this.grabbedEnemy = null;
     this.grabPunchCount = 0;
+
+    this.encounters = ENCOUNTERS.map((item) => ({ ...item, cleared: false }));
+    this.activeEncounter = null;
+    this.currentWaveIndex = -1;
+    this.waveTransitionPending = false;
+    this.stageComplete = false;
+    this.lockLeft = 0;
+    this.lockRight = WORLD_WIDTH;
+    this.leftBarrier = null;
+    this.rightBarrier = null;
   }
 
   create() {
-    this.cameras.main.setBackgroundColor('#87a8c7');
-
-    this.add.rectangle(WIDTH / 2, 405, WIDTH, 270, 0xc8b48a);
-    this.add.rectangle(WIDTH / 2, 290, WIDTH, 18, 0x6f88a0);
-
-    this.add.text(24, 18, 'GBF 狂扁小朋友 原型 v0.3', {
-      fontSize: '24px',
-      color: '#ffffff',
-      stroke: '#000000',
-      strokeThickness: 5,
-    });
-
-    this.add.text(24, 52, '移动：WASD / 方向键　J：拳　K：重击　L：抓取　双击左右：冲刺　空格：暴怒', {
-      fontSize: '15px',
-      color: '#ffffff',
-      stroke: '#000000',
-      strokeThickness: 4,
-    });
-
-    this.statusText = this.add.text(WIDTH - 24, 18, '', {
-      fontSize: '17px',
-      color: '#ffffff',
-      align: 'right',
-      stroke: '#000000',
-      strokeThickness: 4,
-    }).setOrigin(1, 0).setDepth(20000);
-
-    this.comboText = this.add.text(WIDTH / 2, 100, '', {
-      fontSize: '34px',
-      fontStyle: 'bold',
-      color: '#fff2a8',
-      stroke: '#000000',
-      strokeThickness: 7,
-    }).setOrigin(0.5).setDepth(20000);
+    this.physics.world.setBounds(0, 0, WORLD_WIDTH, HEIGHT);
+    this.cameras.main.setBounds(0, 0, WORLD_WIDTH, HEIGHT);
+    this.cameras.main.setBackgroundColor('#75b7db');
 
     this.makeTextures();
+    this.createDeckStage();
+    this.createUi();
 
-    this.player = this.physics.add.sprite(250, 390, 'bii');
+    this.player = this.physics.add.sprite(220, 400, 'bii');
     this.player.setCollideWorldBounds(true);
     this.player.body.setSize(52, 72);
     this.player.baseSpeed = 230;
@@ -72,19 +118,147 @@ class PrototypeScene extends Phaser.Scene {
     this.player.hp = 10;
     this.player.maxHp = 10;
     this.player.invulnerableUntil = 0;
+    this.player.setDepth(this.player.y);
 
     this.cursors = this.input.keyboard.createCursorKeys();
     this.keys = this.input.keyboard.addKeys('W,A,S,D,J,K,L,SPACE,R');
 
-    this.createRageUi();
     this.bindDashInputs();
-    this.spawnWave();
+
+    this.cameras.main.startFollow(this.player, true, 0.1, 0.1, -120, 0);
+    this.cameras.main.setDeadzone(360, 160);
+
+    this.showCenterMessage('格兰赛法甲板', '向右前进，击退来袭的骑空士！', 1700);
+  }
+
+  createDeckStage() {
+    this.add.rectangle(WORLD_WIDTH / 2, 145, WORLD_WIDTH, 290, 0x75b7db).setOrigin(0.5);
+    for (let x = 180; x < WORLD_WIDTH; x += 520) {
+      this.add.ellipse(x, 105 + (x % 3) * 18, 210, 54, 0xffffff, 0.72).setDepth(0);
+      this.add.ellipse(x + 85, 92 + (x % 4) * 12, 145, 42, 0xffffff, 0.64).setDepth(0);
+    }
+
+    this.add.rectangle(WORLD_WIDTH / 2, 292, WORLD_WIDTH, 24, 0x5d3c2b).setDepth(2);
+    this.add.rectangle(WORLD_WIDTH / 2, 306, WORLD_WIDTH, 8, 0xd8b16d).setDepth(3);
+
+    this.add.rectangle(WORLD_WIDTH / 2, 420, WORLD_WIDTH, 228, 0xb47a45).setDepth(1);
+    for (let x = 0; x < WORLD_WIDTH; x += 150) {
+      this.add.rectangle(x, 420, 4, 228, 0x7b4b2d, 0.72).setDepth(1);
+    }
+    for (let y = 325; y <= 515; y += 46) {
+      this.add.rectangle(WORLD_WIDTH / 2, y, WORLD_WIDTH, 3, 0xd7a76d, 0.48).setDepth(1);
+    }
+
+    for (let x = 70; x < WORLD_WIDTH; x += 170) {
+      this.add.rectangle(x, 280, 12, 88, 0x70452f).setDepth(4);
+      this.add.rectangle(x, 238, 16, 18, 0xd1a563).setDepth(5);
+    }
+    this.add.rectangle(WORLD_WIDTH / 2, 248, WORLD_WIDTH, 10, 0x7b4c31).setDepth(4);
+
+    const mastX = 2040;
+    this.add.rectangle(mastX, 178, 38, 355, 0x6d432a).setDepth(4);
+    this.add.rectangle(mastX, 92, 250, 18, 0x70462d).setDepth(4);
+    this.add.line(mastX - 4, 90, 0, 0, -360, 205, 0x4e3c31, 0.8).setLineWidth(4).setDepth(3);
+    this.add.line(mastX + 4, 90, 0, 0, 360, 205, 0x4e3c31, 0.8).setLineWidth(4).setDepth(3);
+
+    [
+      { x: 520, y: 320 },
+      { x: 1510, y: 465 },
+      { x: 2450, y: 330 },
+      { x: 3340, y: 455 },
+    ].forEach((p) => this.createCrate(p.x, p.y));
+
+    [740, 1660, 2550, 3220].forEach((x, i) => {
+      const pole = this.add.rectangle(x, 260, 9, 105, 0x5b3a28).setDepth(3);
+      const flag = this.add.triangle(x + 34, 220, 0, 0, 74, 20, 0, 40, i % 2 ? 0x2a62a8 : 0xe8d5a7, 0.92).setDepth(3);
+      pole.setAlpha(0.95);
+      flag.setAlpha(0.95);
+    });
+
+    this.add.rectangle(WORLD_WIDTH - 135, 385, 8, 230, 0xe7d1a0, 0.75).setDepth(2);
+    this.add.text(WORLD_WIDTH - 225, 270, '→ 船首', {
+      fontSize: '24px',
+      color: '#fff3cf',
+      stroke: '#4a2f22',
+      strokeThickness: 5,
+    }).setDepth(4);
+  }
+
+  createCrate(x, y) {
+    const box = this.add.rectangle(x, y, 70, 62, 0x84502f).setDepth(y - 2);
+    box.setStrokeStyle(5, 0x5d3824, 1);
+    this.add.line(x, y, -28, -22, 28, 22, 0xc78d55, 0.9).setLineWidth(4).setDepth(y - 1);
+    this.add.line(x, y, 28, -22, -28, 22, 0xc78d55, 0.9).setLineWidth(4).setDepth(y - 1);
+  }
+
+  createUi() {
+    this.add.text(24, 18, 'GBF 狂扁小朋友 原型 v0.4', {
+      fontSize: '24px',
+      color: '#ffffff',
+      stroke: '#000000',
+      strokeThickness: 5,
+    }).setScrollFactor(0).setDepth(30000);
+
+    this.add.text(24, 52, '移动：WASD / 方向键　J：拳　K：重击　L：抓取　双击左右：冲刺　空格：暴怒', {
+      fontSize: '15px',
+      color: '#ffffff',
+      stroke: '#000000',
+      strokeThickness: 4,
+    }).setScrollFactor(0).setDepth(30000);
+
+    this.statusText = this.add.text(WIDTH - 24, 18, '', {
+      fontSize: '17px',
+      color: '#ffffff',
+      align: 'right',
+      stroke: '#000000',
+      strokeThickness: 4,
+    }).setOrigin(1, 0).setScrollFactor(0).setDepth(30000);
+
+    this.comboText = this.add.text(WIDTH / 2, 100, '', {
+      fontSize: '34px',
+      fontStyle: 'bold',
+      color: '#fff2a8',
+      stroke: '#000000',
+      strokeThickness: 7,
+    }).setOrigin(0.5).setScrollFactor(0).setDepth(30000);
+
+    this.areaText = this.add.text(WIDTH / 2, 152, '', {
+      fontSize: '22px',
+      fontStyle: 'bold',
+      color: '#ffffff',
+      stroke: '#000000',
+      strokeThickness: 6,
+    }).setOrigin(0.5).setScrollFactor(0).setDepth(30000);
+
+    this.add.text(24, HEIGHT - 54, '蜥蜴怒气槽', {
+      fontSize: '15px',
+      color: '#ffffff',
+      stroke: '#000000',
+      strokeThickness: 4,
+    }).setScrollFactor(0).setDepth(30000);
+
+    this.rageBg = this.add.rectangle(24, HEIGHT - 26, 250, 18, 0x111111, 0.75)
+      .setOrigin(0, 0.5)
+      .setScrollFactor(0)
+      .setDepth(30000);
+
+    this.rageBar = this.add.rectangle(27, HEIGHT - 26, 0, 12, 0xffd43b, 1)
+      .setOrigin(0, 0.5)
+      .setScrollFactor(0)
+      .setDepth(30001);
+
+    this.progressBg = this.add.rectangle(WIDTH / 2, HEIGHT - 22, 300, 8, 0x111111, 0.62)
+      .setScrollFactor(0)
+      .setDepth(30000);
+    this.progressBar = this.add.rectangle(WIDTH / 2 - 150, HEIGHT - 22, 0, 6, 0xaee6ff, 0.9)
+      .setOrigin(0, 0.5)
+      .setScrollFactor(0)
+      .setDepth(30001);
   }
 
   makeTextures() {
     const g = this.add.graphics();
 
-    // 肌肉碧占位图，之后替换为正式精灵图。
     g.fillStyle(0x2454a6, 1);
     g.fillRoundedRect(12, 18, 56, 66, 14);
     g.fillStyle(0x17376f, 1);
@@ -104,23 +278,6 @@ class PrototypeScene extends Phaser.Scene {
     g.fillCircle(30, 16, 17);
     g.generateTexture('enemy', 60, 76);
     g.destroy();
-  }
-
-  createRageUi() {
-    this.add.text(24, HEIGHT - 54, '蜥蜴怒气槽', {
-      fontSize: '15px',
-      color: '#ffffff',
-      stroke: '#000000',
-      strokeThickness: 4,
-    }).setDepth(20000);
-
-    this.rageBg = this.add.rectangle(24, HEIGHT - 26, 250, 18, 0x111111, 0.75)
-      .setOrigin(0, 0.5)
-      .setDepth(20000);
-
-    this.rageBar = this.add.rectangle(27, HEIGHT - 26, 0, 12, 0xffd43b, 1)
-      .setOrigin(0, 0.5)
-      .setDepth(20001);
   }
 
   bindDashInputs() {
@@ -155,37 +312,13 @@ class PrototypeScene extends Phaser.Scene {
     this.player.setTint(0xc8f7ff);
   }
 
-  spawnWave() {
-    const positions = [
-      { x: 660, y: 350 },
-      { x: 760, y: 420 },
-      { x: 850, y: 330 },
-      { x: 900, y: 465 },
-    ];
-
-    positions.forEach((pos, index) => {
-      const enemy = this.physics.add.sprite(pos.x, pos.y, 'enemy');
-      enemy.hp = 6;
-      enemy.maxHp = 6;
-      enemy.speed = 52 + index * 7;
-      enemy.stunUntil = 0;
-      enemy.knockedDownUntil = 0;
-      enemy.attackReadyAt = this.time.now + 900 + index * 180;
-      enemy.grabbed = false;
-      enemy.thrownUntil = 0;
-      enemy.throwHitTargets = new Set();
-      enemy.body.setSize(42, 56);
-      enemy.setCollideWorldBounds(true);
-      this.enemies.push(enemy);
-    });
-  }
-
   update(time) {
     if (this.gameOver) {
       if (Phaser.Input.Keyboard.JustDown(this.keys.R)) this.scene.restart();
       return;
     }
 
+    this.updateStageFlow(time);
     this.updateRage(time);
     this.updateDash(time);
     this.updateHeldEnemy();
@@ -194,17 +327,197 @@ class PrototypeScene extends Phaser.Scene {
     this.updateEnemies(time);
     this.updateThrownEnemies(time);
     this.updateUi(time);
+  }
 
-    const alive = this.enemies.filter((enemy) => enemy.active).length;
-    if (alive === 0 && !this.waveCleared) {
-      this.waveCleared = true;
-      this.add.text(WIDTH / 2, 150, '清场！', {
-        fontSize: '52px',
-        fontStyle: 'bold',
-        color: '#ffe06a',
-        stroke: '#000000',
-        strokeThickness: 8,
-      }).setOrigin(0.5).setDepth(20000);
+  updateStageFlow() {
+    if (!this.activeEncounter && !this.stageComplete) {
+      const next = this.encounters.find((encounter) => !encounter.cleared && this.player.x >= encounter.triggerX);
+      if (next) this.startEncounter(next);
+    }
+
+    if (this.activeEncounter && !this.waveTransitionPending) {
+      const alive = this.enemies.filter((enemy) => enemy.active).length;
+      if (alive === 0) {
+        this.waveTransitionPending = true;
+        this.time.delayedCall(650, () => {
+          if (!this.activeEncounter) return;
+          const nextWaveIndex = this.currentWaveIndex + 1;
+          if (nextWaveIndex < this.activeEncounter.waves.length) {
+            this.spawnEncounterWave(nextWaveIndex);
+          } else {
+            this.completeEncounter();
+          }
+          this.waveTransitionPending = false;
+        });
+      }
+    }
+
+    if (
+      !this.stageComplete
+      && this.encounters.every((encounter) => encounter.cleared)
+      && this.player.x >= WORLD_WIDTH - 260
+    ) {
+      this.completeStage();
+    }
+  }
+
+  startEncounter(encounter) {
+    this.activeEncounter = encounter;
+    this.currentWaveIndex = -1;
+    this.waveTransitionPending = true;
+
+    this.lockLeft = encounter.cameraX + 70;
+    this.lockRight = encounter.cameraX + WIDTH - 70;
+
+    this.cameras.main.stopFollow();
+    this.cameras.main.pan(
+      encounter.cameraX + WIDTH / 2,
+      HEIGHT / 2,
+      380,
+      'Sine.easeInOut',
+      true,
+      (_camera, progress) => {
+        if (progress === 1) this.cameras.main.setScroll(encounter.cameraX, 0);
+      },
+    );
+
+    this.createBattleBarriers(encounter.cameraX);
+    this.areaText.setText(`${encounter.name}：敌袭！`);
+    this.flashComboLabel('战斗区域封锁！');
+
+    this.time.delayedCall(520, () => {
+      if (!this.activeEncounter) return;
+      this.spawnEncounterWave(0);
+      this.waveTransitionPending = false;
+    });
+  }
+
+  createBattleBarriers(cameraX) {
+    this.destroyBattleBarriers();
+
+    this.leftBarrier = this.add.rectangle(cameraX + 40, 405, 24, 210, 0xff566b, 0.72)
+      .setDepth(25000);
+    this.rightBarrier = this.add.rectangle(cameraX + WIDTH - 40, 405, 24, 210, 0xff566b, 0.72)
+      .setDepth(25000);
+
+    [this.leftBarrier, this.rightBarrier].forEach((barrier) => {
+      this.tweens.add({
+        targets: barrier,
+        alpha: { from: 0.35, to: 0.9 },
+        duration: 420,
+        yoyo: true,
+        repeat: -1,
+      });
+    });
+  }
+
+  destroyBattleBarriers() {
+    [this.leftBarrier, this.rightBarrier].forEach((barrier) => {
+      if (barrier) barrier.destroy();
+    });
+    this.leftBarrier = null;
+    this.rightBarrier = null;
+  }
+
+  spawnEncounterWave(index) {
+    this.currentWaveIndex = index;
+    const wave = this.activeEncounter.waves[index];
+
+    this.areaText.setText(
+      `${this.activeEncounter.name}　第 ${index + 1}/${this.activeEncounter.waves.length} 波`,
+    );
+    this.flashComboLabel(`第 ${index + 1} 波！`);
+
+    wave.forEach((pos, enemyIndex) => {
+      this.time.delayedCall(enemyIndex * 120, () => this.spawnEnemy(pos.x, pos.y, enemyIndex));
+    });
+  }
+
+  spawnEnemy(x, y, index = 0) {
+    const enemy = this.physics.add.sprite(x, y, 'enemy');
+    enemy.hp = 6;
+    enemy.maxHp = 6;
+    enemy.speed = 52 + (index % 4) * 7;
+    enemy.stunUntil = 0;
+    enemy.knockedDownUntil = 0;
+    enemy.attackReadyAt = this.time.now + 700 + index * 120;
+    enemy.grabbed = false;
+    enemy.thrownUntil = 0;
+    enemy.throwHitTargets = new Set();
+    enemy.body.setSize(42, 56);
+    enemy.setCollideWorldBounds(true);
+    enemy.setAlpha(0);
+
+    this.tweens.add({
+      targets: enemy,
+      alpha: 1,
+      duration: 180,
+    });
+
+    this.enemies.push(enemy);
+  }
+
+  completeEncounter() {
+    const finished = this.activeEncounter;
+    if (!finished) return;
+
+    finished.cleared = true;
+    this.activeEncounter = null;
+    this.currentWaveIndex = -1;
+    this.lockLeft = 0;
+    this.lockRight = WORLD_WIDTH;
+    this.destroyBattleBarriers();
+
+    this.areaText.setText(`${finished.name} 已清理`);
+    this.showCenterMessage('区域清理完毕！', '继续向右前进', 1300);
+
+    this.time.delayedCall(320, () => {
+      if (this.gameOver || this.activeEncounter) return;
+      this.cameras.main.startFollow(this.player, true, 0.1, 0.1, -120, 0);
+      this.cameras.main.setDeadzone(360, 160);
+    });
+  }
+
+  completeStage() {
+    this.stageComplete = true;
+    this.player.setVelocity(0, 0);
+    this.showCenterMessage('第一段完成！', '格兰赛法甲板已突破', 999999);
+
+    this.add.text(WIDTH / 2, 285, '后续：进入主甲板 / 船内区域', {
+      fontSize: '20px',
+      color: '#fff3cf',
+      stroke: '#000000',
+      strokeThickness: 5,
+    }).setOrigin(0.5).setScrollFactor(0).setDepth(31000);
+  }
+
+  showCenterMessage(title, subtitle = '', duration = 1200) {
+    const titleText = this.add.text(WIDTH / 2, 205, title, {
+      fontSize: '44px',
+      fontStyle: 'bold',
+      color: '#ffe06a',
+      stroke: '#000000',
+      strokeThickness: 8,
+    }).setOrigin(0.5).setScrollFactor(0).setDepth(31000);
+
+    const subtitleText = this.add.text(WIDTH / 2, 255, subtitle, {
+      fontSize: '20px',
+      color: '#ffffff',
+      stroke: '#000000',
+      strokeThickness: 5,
+    }).setOrigin(0.5).setScrollFactor(0).setDepth(31000);
+
+    if (duration < 900000) {
+      this.tweens.add({
+        targets: [titleText, subtitleText],
+        alpha: 0,
+        delay: Math.max(400, duration - 350),
+        duration: 350,
+        onComplete: () => {
+          titleText.destroy();
+          subtitleText.destroy();
+        },
+      });
     }
   }
 
@@ -215,14 +528,19 @@ class PrototypeScene extends Phaser.Scene {
       ? `暴怒剩余 ${Math.ceil((this.rageUntil - time) / 1000)} 秒`
       : `怒气 ${Math.round(this.rage)}%`;
     const grabLabel = this.grabbedEnemy?.active ? '\n状态：抓住敌人' : '';
+    const battleLabel = this.activeEncounter
+      ? `\n当前波次 ${this.currentWaveIndex + 1}/${this.activeEncounter.waves.length}`
+      : '';
 
     this.statusText.setText(
-      `生命 ${this.player.hp}/${this.player.maxHp}\n剩余敌人 ${alive}\n${rageLabel}${grabLabel}`,
+      `生命 ${this.player.hp}/${this.player.maxHp}\n场上敌人 ${alive}\n${rageLabel}${grabLabel}${battleLabel}`,
     );
 
     const rageWidth = 244 * Phaser.Math.Clamp(this.rage / 100, 0, 1);
     this.rageBar.width = rageWidth;
     this.rageBar.setFillStyle(rageActive ? 0xff694f : 0xffd43b, 1);
+
+    this.progressBar.width = 300 * Phaser.Math.Clamp(this.player.x / (WORLD_WIDTH - 180), 0, 1);
 
     if (time > this.comboExpireAt && this.comboCount > 0) {
       this.comboCount = 0;
@@ -231,7 +549,7 @@ class PrototypeScene extends Phaser.Scene {
   }
 
   updatePlayerMovement() {
-    if (this.isDashing) return;
+    if (this.isDashing || this.stageComplete) return;
 
     let x = 0;
     let y = 0;
@@ -253,9 +571,21 @@ class PrototypeScene extends Phaser.Scene {
       this.player.setVelocity(0, 0);
     }
 
-    this.player.y = Phaser.Math.Clamp(this.player.y, FLOOR_TOP, FLOOR_BOTTOM);
+    this.enforcePlayerBounds();
     this.player.setDepth(this.player.y);
     this.player.setFlipX(this.player.facing < 0);
+  }
+
+  enforcePlayerBounds() {
+    this.player.y = Phaser.Math.Clamp(this.player.y, FLOOR_TOP, FLOOR_BOTTOM);
+
+    if (this.activeEncounter) {
+      this.player.x = Phaser.Math.Clamp(this.player.x, this.lockLeft, this.lockRight);
+      if (this.player.x <= this.lockLeft + 1 && this.player.body.velocity.x < 0) this.player.setVelocityX(0);
+      if (this.player.x >= this.lockRight - 1 && this.player.body.velocity.x > 0) this.player.setVelocityX(0);
+    } else {
+      this.player.x = Phaser.Math.Clamp(this.player.x, 40, WORLD_WIDTH - 40);
+    }
   }
 
   updateDash(time) {
@@ -266,7 +596,7 @@ class PrototypeScene extends Phaser.Scene {
       this.player.clearTint();
       this.player.setVelocity(0, 0);
     } else {
-      this.player.y = Phaser.Math.Clamp(this.player.y, FLOOR_TOP, FLOOR_BOTTOM);
+      this.enforcePlayerBounds();
       this.player.setDepth(this.player.y);
     }
   }
@@ -287,17 +617,16 @@ class PrototypeScene extends Phaser.Scene {
   }
 
   updateCombat(time) {
+    if (this.stageComplete) return;
+
     if (Phaser.Input.Keyboard.JustDown(this.keys.SPACE) && this.rage >= 100 && !this.isRageActive()) {
       this.activateRage();
       return;
     }
 
     if (Phaser.Input.Keyboard.JustDown(this.keys.L) && time >= this.attackCooldown) {
-      if (this.grabbedEnemy) {
-        this.releaseGrab(false);
-      } else {
-        this.tryGrabEnemy();
-      }
+      if (this.grabbedEnemy) this.releaseGrab(false);
+      else this.tryGrabEnemy();
       return;
     }
 
@@ -312,11 +641,8 @@ class PrototypeScene extends Phaser.Scene {
     }
 
     if (Phaser.Input.Keyboard.JustDown(this.keys.J) && time >= this.attackCooldown) {
-      if (this.isDashing) {
-        this.doDashAttack(false);
-      } else {
-        this.doLightComboAttack(time);
-      }
+      if (this.isDashing) this.doDashAttack(false);
+      else this.doLightComboAttack(time);
     }
 
     if (Phaser.Input.Keyboard.JustDown(this.keys.K) && time >= this.attackCooldown) {
@@ -395,9 +721,7 @@ class PrototypeScene extends Phaser.Scene {
     this.cameras.main.shake(45, 0.0035);
     this.spawnHitFlash(enemy.x, enemy.y - 8, false);
 
-    if (!this.isRageActive()) {
-      this.rage = Phaser.Math.Clamp(this.rage + 6, 0, 100);
-    }
+    if (!this.isRageActive()) this.rage = Phaser.Math.Clamp(this.rage + 6, 0, 100);
 
     this.flashComboLabel(`抓取痛殴 ×${this.grabPunchCount}`);
 
@@ -430,9 +754,7 @@ class PrototypeScene extends Phaser.Scene {
     this.flashComboLabel('投掷！');
     this.cameras.main.shake(95, 0.009);
 
-    if (!this.isRageActive()) {
-      this.rage = Phaser.Math.Clamp(this.rage + 12, 0, 100);
-    }
+    if (!this.isRageActive()) this.rage = Phaser.Math.Clamp(this.rage + 12, 0, 100);
   }
 
   releaseGrab(pushAway = true) {
@@ -441,19 +763,13 @@ class PrototypeScene extends Phaser.Scene {
 
     this.grabbedEnemy = null;
     this.grabPunchCount = 0;
-
     if (!enemy.active) return;
 
     enemy.grabbed = false;
     enemy.body.enable = true;
     enemy.body.moves = true;
     enemy.stunUntil = this.time.now + 350;
-
-    if (pushAway) {
-      enemy.setVelocity(this.player.facing * 120, 0);
-    } else {
-      enemy.setVelocity(0, 0);
-    }
+    enemy.setVelocity(pushAway ? this.player.facing * 120 : 0, 0);
   }
 
   doLightComboAttack(time) {
@@ -542,13 +858,8 @@ class PrototypeScene extends Phaser.Scene {
       this.time.delayedCall(75, () => enemy.active && enemy.clearTint());
       enemy.setVelocity(this.player.facing * knockback, 0);
 
-      if (config.knockdown && enemy.hp > 0) {
-        this.knockDownEnemy(enemy, config.stun + 650);
-      }
-
-      if (enemy.hp <= 0) {
-        this.defeatEnemy(enemy, knockback);
-      }
+      if (config.knockdown && enemy.hp > 0) this.knockDownEnemy(enemy, config.stun + 650);
+      if (enemy.hp <= 0) this.defeatEnemy(enemy, knockback);
     });
 
     if (hitCount > 0) {
@@ -595,12 +906,18 @@ class PrototypeScene extends Phaser.Scene {
     enemy.setVelocityX(this.player.facing * 180);
   }
 
+  knockDownEnemyFromThrow(enemy, direction, duration) {
+    if (!enemy.active) return;
+    enemy.knockedDownUntil = this.time.now + duration;
+    enemy.stunUntil = enemy.knockedDownUntil;
+    enemy.setAngle(direction * 90);
+    enemy.setVelocity(direction * 340, 0);
+  }
+
   defeatEnemy(enemy, knockback = 280) {
     if (!enemy.active) return;
 
-    if (this.grabbedEnemy === enemy) {
-      this.grabbedEnemy = null;
-    }
+    if (this.grabbedEnemy === enemy) this.grabbedEnemy = null;
 
     enemy.grabbed = false;
     if (enemy.body) enemy.body.enable = false;
@@ -637,10 +954,7 @@ class PrototypeScene extends Phaser.Scene {
         return;
       }
 
-      if (enemy.angle !== 0) {
-        enemy.setAngle(0);
-      }
-
+      if (enemy.angle !== 0) enemy.setAngle(0);
       if (time < enemy.stunUntil) return;
 
       const dx = this.player.x - enemy.x;
@@ -687,23 +1001,13 @@ class PrototypeScene extends Phaser.Scene {
         this.spawnHitFlash(target.x, target.y, true, 90);
         this.cameras.main.shake(100, 0.01);
 
-        if (target.hp <= 0) {
-          this.defeatEnemy(target, 430);
-        }
+        if (target.hp <= 0) this.defeatEnemy(target, 430);
       });
     });
   }
 
-  knockDownEnemyFromThrow(enemy, direction, duration) {
-    if (!enemy.active) return;
-    enemy.knockedDownUntil = this.time.now + duration;
-    enemy.stunUntil = enemy.knockedDownUntil;
-    enemy.setAngle(direction * 90);
-    enemy.setVelocity(direction * 340, 0);
-  }
-
   enemyAttack(enemy) {
-    if (this.time.now < this.player.invulnerableUntil || this.isRageActive() || this.grabbedEnemy === enemy) return;
+    if (this.time.now < this.player.invulnerableUntil || this.isRageActive()) return;
 
     const dx = Math.abs(enemy.x - this.player.x);
     const dy = Math.abs(enemy.y - this.player.y);
@@ -726,9 +1030,7 @@ class PrototypeScene extends Phaser.Scene {
   hurtPlayer(direction) {
     if (this.time.now < this.player.invulnerableUntil || this.isRageActive()) return;
 
-    if (this.grabbedEnemy) {
-      this.releaseGrab(true);
-    }
+    if (this.grabbedEnemy) this.releaseGrab(true);
 
     this.player.hp -= 1;
     this.player.invulnerableUntil = this.time.now + 850;
@@ -740,9 +1042,7 @@ class PrototypeScene extends Phaser.Scene {
       if (this.player.active && !this.isRageActive()) this.player.clearTint();
     });
 
-    if (this.player.hp <= 0) {
-      this.endGame();
-    }
+    if (this.player.hp <= 0) this.endGame();
   }
 
   endGame() {
@@ -757,20 +1057,18 @@ class PrototypeScene extends Phaser.Scene {
       color: '#ff8d8d',
       stroke: '#000000',
       strokeThickness: 8,
-    }).setOrigin(0.5).setDepth(30000);
+    }).setOrigin(0.5).setScrollFactor(0).setDepth(32000);
 
     this.add.text(WIDTH / 2, 245, '按 R 重新开始', {
       fontSize: '23px',
       color: '#ffffff',
       stroke: '#000000',
       strokeThickness: 5,
-    }).setOrigin(0.5).setDepth(30000);
+    }).setOrigin(0.5).setScrollFactor(0).setDepth(32000);
   }
 
   activateRage() {
-    if (this.grabbedEnemy) {
-      this.throwGrabbedEnemy();
-    }
+    if (this.grabbedEnemy) this.throwGrabbedEnemy();
 
     this.rage = 100;
     this.rageUntil = this.time.now + RAGE_DURATION;
