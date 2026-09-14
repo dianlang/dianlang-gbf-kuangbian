@@ -112,6 +112,10 @@ class PrototypeScene extends Phaser.Scene {
       frameWidth: 256,
       frameHeight: 256,
     });
+    this.load.spritesheet("bii-punch", "/characters/bii/punch.png", {
+    frameWidth: 256,
+    frameHeight: 256,
+    });
   }
 
   preload() {
@@ -141,6 +145,7 @@ class PrototypeScene extends Phaser.Scene {
     this.createDeckStage();
     this.createUi();
 
+<<<<<<< HEAD
     const hasPlayerArt = this.textures.exists('bii-idle');
     this.player = this.physics.add.sprite(220, 400, hasPlayerArt ? 'bii-idle' : 'bii', 0);
     this.player.usesSpriteArt = hasPlayerArt;
@@ -156,6 +161,41 @@ class PrototypeScene extends Phaser.Scene {
 
     this.player.setCollideWorldBounds(true);
     this.player.baseSpeed = 230;
+=======
+    this.anims.create({
+      key: 'bii-idle',
+      frames: this.anims.generateFrameNumbers('bii-idle', {
+        start: 0,
+        end: 3,
+      }),
+      frameRate: 2,
+      repeat: -1,
+    });
+    this.anims.create({
+      key: "bii-walk",
+      frames: this.anims.generateFrameNumbers("bii-walk", {
+        start: 0,
+        end: 7,
+      }),
+      frameRate: 8,
+      repeat: -1,
+    });
+    this.anims.create({
+      key: "bii-punch",
+      frames: this.anims.generateFrameNumbers("bii-punch", {
+        start: 0,
+        end: 3,
+      }),
+      frameRate: 14,
+      repeat: 0,
+    });
+    this.player = this.physics.add.sprite(220, 400, 'bii-idle', 0);
+    this.player.setScale(0.45);
+    this.player.play('bii-idle');
+    this.player.setCollideWorldBounds(true);
+    this.player.body.setSize(52, 72);
+    this.player.baseSpeed = 150;
+>>>>>>> 2aac69c (feat: add Bii punch animation)
     this.player.facing = 1;
     this.player.hp = 10;
     this.player.maxHp = 10;
@@ -603,6 +643,7 @@ class PrototypeScene extends Phaser.Scene {
     const vector = new Phaser.Math.Vector2(x, y);
     const moving = vector.lengthSq() > 0;
 
+<<<<<<< HEAD
     if (moving) {
       vector.normalize().scale(this.player.baseSpeed * speedMultiplier * grabPenalty);
       this.player.setVelocity(vector.x, vector.y);
@@ -612,6 +653,30 @@ class PrototypeScene extends Phaser.Scene {
     }
 
     this.updatePlayerAnimation(moving);
+=======
+    if (vector.lengthSq() > 0) {
+      vector.normalize().scale(
+        this.player.baseSpeed * speedMultiplier * grabPenalty,
+      );
+
+      this.player.setVelocity(vector.x, vector.y);
+
+      if (Math.abs(vector.x) > 5) {
+        this.player.facing = Math.sign(vector.x);
+      }
+
+      if (!this.player.isAttacking) {
+        this.player.play("bii-walk", true);
+      }
+    } else {
+      this.player.setVelocity(0, 0);
+
+      if (!this.player.isAttacking) {
+        this.player.play("bii-idle", true);
+      }
+    }
+
+>>>>>>> 2aac69c (feat: add Bii punch animation)
     this.enforcePlayerBounds();
     this.player.setDepth(this.player.y);
     this.player.setFlipX(this.player.facing < 0);
