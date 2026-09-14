@@ -9,7 +9,8 @@ const FLOOR_BOTTOM = 500;
 const COMBO_WINDOW = 520;
 const RAGE_DURATION = 10000;
 const PLAYER_FRAME_SIZE = 256;
-const PLAYER_SCALE = 0.48;
+const PLAYER_SCALE = 0.45;
+const PLAYER_SPEED = 150;
 
 const ENCOUNTERS = [
   {
@@ -103,20 +104,6 @@ class PrototypeScene extends Phaser.Scene {
     this.leftBarrier = null;
     this.rightBarrier = null;
   }
-  preload() {
-    this.load.spritesheet('bii-idle', '/characters/bii/idle.png', {
-      frameWidth: 256,
-      frameHeight: 256,
-    });
-    this.load.spritesheet('bii-walk', '/characters/bii/walk.png', {
-      frameWidth: 256,
-      frameHeight: 256,
-    });
-    this.load.spritesheet("bii-punch", "/characters/bii/punch.png", {
-    frameWidth: 256,
-    frameHeight: 256,
-    });
-  }
 
   preload() {
     this.load.spritesheet('bii-idle', '/characters/bii/idle.png', {
@@ -145,7 +132,6 @@ class PrototypeScene extends Phaser.Scene {
     this.createDeckStage();
     this.createUi();
 
-<<<<<<< HEAD
     const hasPlayerArt = this.textures.exists('bii-idle');
     this.player = this.physics.add.sprite(220, 400, hasPlayerArt ? 'bii-idle' : 'bii', 0);
     this.player.usesSpriteArt = hasPlayerArt;
@@ -160,42 +146,7 @@ class PrototypeScene extends Phaser.Scene {
     }
 
     this.player.setCollideWorldBounds(true);
-    this.player.baseSpeed = 230;
-=======
-    this.anims.create({
-      key: 'bii-idle',
-      frames: this.anims.generateFrameNumbers('bii-idle', {
-        start: 0,
-        end: 3,
-      }),
-      frameRate: 2,
-      repeat: -1,
-    });
-    this.anims.create({
-      key: "bii-walk",
-      frames: this.anims.generateFrameNumbers("bii-walk", {
-        start: 0,
-        end: 7,
-      }),
-      frameRate: 8,
-      repeat: -1,
-    });
-    this.anims.create({
-      key: "bii-punch",
-      frames: this.anims.generateFrameNumbers("bii-punch", {
-        start: 0,
-        end: 3,
-      }),
-      frameRate: 14,
-      repeat: 0,
-    });
-    this.player = this.physics.add.sprite(220, 400, 'bii-idle', 0);
-    this.player.setScale(0.45);
-    this.player.play('bii-idle');
-    this.player.setCollideWorldBounds(true);
-    this.player.body.setSize(52, 72);
-    this.player.baseSpeed = 150;
->>>>>>> 2aac69c (feat: add Bii punch animation)
+    this.player.baseSpeed = PLAYER_SPEED;
     this.player.facing = 1;
     this.player.hp = 10;
     this.player.maxHp = 10;
@@ -218,20 +169,16 @@ class PrototypeScene extends Phaser.Scene {
       this.anims.create({
         key: 'bii-idle',
         frames: this.anims.generateFrameNumbers('bii-idle', { start: 0, end: 3 }),
-        frameRate: 4,
+        frameRate: 2,
         repeat: -1,
       });
     }
 
     if (this.textures.exists('bii-walk') && !this.anims.exists('bii-walk')) {
-      const walkFrameCount = this.textures.get('bii-walk').frameTotal - 1;
       this.anims.create({
         key: 'bii-walk',
-        frames: this.anims.generateFrameNumbers('bii-walk', {
-          start: 0,
-          end: Math.max(0, walkFrameCount - 1),
-        }),
-        frameRate: walkFrameCount >= 8 ? 13 : 10,
+        frames: this.anims.generateFrameNumbers('bii-walk', { start: 0, end: 7 }),
+        frameRate: 8,
         repeat: -1,
       });
     }
@@ -284,7 +231,18 @@ class PrototypeScene extends Phaser.Scene {
 
     [740, 1660, 2550, 3220].forEach((x, i) => {
       const pole = this.add.rectangle(x, 260, 9, 105, 0x5b3a28).setDepth(3);
-      const flag = this.add.triangle(x + 34, 220, 0, 0, 74, 20, 0, 40, i % 2 ? 0x2a62a8 : 0xe8d5a7, 0.92).setDepth(3);
+      const flag = this.add.triangle(
+        x + 34,
+        220,
+        0,
+        0,
+        74,
+        20,
+        0,
+        40,
+        i % 2 ? 0x2a62a8 : 0xe8d5a7,
+        0.92,
+      ).setDepth(3);
       pole.setAlpha(0.95);
       flag.setAlpha(0.95);
     });
@@ -355,13 +313,16 @@ class PrototypeScene extends Phaser.Scene {
       .setOrigin(0, 0.5)
       .setScrollFactor(0)
       .setDepth(30000);
+
     this.rageBar = this.add.rectangle(27, HEIGHT - 26, 0, 12, 0xffd43b, 1)
       .setOrigin(0, 0.5)
       .setScrollFactor(0)
       .setDepth(30001);
+
     this.progressBg = this.add.rectangle(WIDTH / 2, HEIGHT - 22, 300, 8, 0x111111, 0.62)
       .setScrollFactor(0)
       .setDepth(30000);
+
     this.progressBar = this.add.rectangle(WIDTH / 2 - 150, HEIGHT - 22, 0, 6, 0xaee6ff, 0.9)
       .setOrigin(0, 0.5)
       .setScrollFactor(0)
@@ -396,6 +357,7 @@ class PrototypeScene extends Phaser.Scene {
     const bind = (eventName, direction) => {
       this.input.keyboard.on(eventName, () => this.handleDashTap(direction));
     };
+
     bind('keydown-LEFT', 'left');
     bind('keydown-A', 'left');
     bind('keydown-RIGHT', 'right');
@@ -405,6 +367,7 @@ class PrototypeScene extends Phaser.Scene {
   handleDashTap(direction) {
     if (!this.player || this.gameOver || this.grabbedEnemy) return;
     const now = this.time.now;
+
     if (now - this.lastHorizontalTap[direction] <= 260) {
       this.startDash(direction === 'right' ? 1 : -1);
       this.lastHorizontalTap[direction] = -9999;
@@ -441,7 +404,9 @@ class PrototypeScene extends Phaser.Scene {
 
   updateStageFlow() {
     if (!this.activeEncounter && !this.stageComplete) {
-      const next = this.encounters.find((encounter) => !encounter.cleared && this.player.x >= encounter.triggerX);
+      const next = this.encounters.find(
+        (encounter) => !encounter.cleared && this.player.x >= encounter.triggerX,
+      );
       if (next) this.startEncounter(next);
     }
 
@@ -452,14 +417,21 @@ class PrototypeScene extends Phaser.Scene {
         this.time.delayedCall(650, () => {
           if (!this.activeEncounter) return;
           const nextWaveIndex = this.currentWaveIndex + 1;
-          if (nextWaveIndex < this.activeEncounter.waves.length) this.spawnEncounterWave(nextWaveIndex);
-          else this.completeEncounter();
+          if (nextWaveIndex < this.activeEncounter.waves.length) {
+            this.spawnEncounterWave(nextWaveIndex);
+          } else {
+            this.completeEncounter();
+          }
           this.waveTransitionPending = false;
         });
       }
     }
 
-    if (!this.stageComplete && this.encounters.every((encounter) => encounter.cleared) && this.player.x >= WORLD_WIDTH - 260) {
+    if (
+      !this.stageComplete &&
+      this.encounters.every((encounter) => encounter.cleared) &&
+      this.player.x >= WORLD_WIDTH - 260
+    ) {
       this.completeStage();
     }
   }
@@ -521,7 +493,9 @@ class PrototypeScene extends Phaser.Scene {
   spawnEncounterWave(index) {
     this.currentWaveIndex = index;
     const wave = this.activeEncounter.waves[index];
-    this.areaText.setText(`${this.activeEncounter.name}　第 ${index + 1}/${this.activeEncounter.waves.length} 波`);
+    this.areaText.setText(
+      `${this.activeEncounter.name}　第 ${index + 1}/${this.activeEncounter.waves.length} 波`,
+    );
     this.flashComboLabel(`第 ${index + 1} 波！`);
 
     wave.forEach((pos, enemyIndex) => {
@@ -613,11 +587,17 @@ class PrototypeScene extends Phaser.Scene {
   updateUi(time) {
     const alive = this.enemies.filter((enemy) => enemy.active).length;
     const rageActive = time < this.rageUntil;
-    const rageLabel = rageActive ? `暴怒剩余 ${Math.ceil((this.rageUntil - time) / 1000)} 秒` : `怒气 ${Math.round(this.rage)}%`;
+    const rageLabel = rageActive
+      ? `暴怒剩余 ${Math.ceil((this.rageUntil - time) / 1000)} 秒`
+      : `怒气 ${Math.round(this.rage)}%`;
     const grabLabel = this.grabbedEnemy?.active ? '\n状态：抓住敌人' : '';
-    const battleLabel = this.activeEncounter ? `\n当前波次 ${this.currentWaveIndex + 1}/${this.activeEncounter.waves.length}` : '';
+    const battleLabel = this.activeEncounter
+      ? `\n当前波次 ${this.currentWaveIndex + 1}/${this.activeEncounter.waves.length}`
+      : '';
 
-    this.statusText.setText(`生命 ${this.player.hp}/${this.player.maxHp}\n场上敌人 ${alive}\n${rageLabel}${grabLabel}${battleLabel}`);
+    this.statusText.setText(
+      `生命 ${this.player.hp}/${this.player.maxHp}\n场上敌人 ${alive}\n${rageLabel}${grabLabel}${battleLabel}`,
+    );
     this.rageBar.width = 244 * Phaser.Math.Clamp(this.rage / 100, 0, 1);
     this.rageBar.setFillStyle(rageActive ? 0xff694f : 0xffd43b, 1);
     this.progressBar.width = 300 * Phaser.Math.Clamp(this.player.x / (WORLD_WIDTH - 180), 0, 1);
@@ -643,7 +623,6 @@ class PrototypeScene extends Phaser.Scene {
     const vector = new Phaser.Math.Vector2(x, y);
     const moving = vector.lengthSq() > 0;
 
-<<<<<<< HEAD
     if (moving) {
       vector.normalize().scale(this.player.baseSpeed * speedMultiplier * grabPenalty);
       this.player.setVelocity(vector.x, vector.y);
@@ -653,30 +632,6 @@ class PrototypeScene extends Phaser.Scene {
     }
 
     this.updatePlayerAnimation(moving);
-=======
-    if (vector.lengthSq() > 0) {
-      vector.normalize().scale(
-        this.player.baseSpeed * speedMultiplier * grabPenalty,
-      );
-
-      this.player.setVelocity(vector.x, vector.y);
-
-      if (Math.abs(vector.x) > 5) {
-        this.player.facing = Math.sign(vector.x);
-      }
-
-      if (!this.player.isAttacking) {
-        this.player.play("bii-walk", true);
-      }
-    } else {
-      this.player.setVelocity(0, 0);
-
-      if (!this.player.isAttacking) {
-        this.player.play("bii-idle", true);
-      }
-    }
-
->>>>>>> 2aac69c (feat: add Bii punch animation)
     this.enforcePlayerBounds();
     this.player.setDepth(this.player.y);
     this.player.setFlipX(this.player.facing < 0);
@@ -687,9 +642,13 @@ class PrototypeScene extends Phaser.Scene {
     if (this.time.now < this.playerAttackAnimationUntil) return;
 
     if (moving && this.anims.exists('bii-walk')) {
-      if (this.player.anims.currentAnim?.key !== 'bii-walk') this.player.play('bii-walk', true);
+      if (this.player.anims.currentAnim?.key !== 'bii-walk') {
+        this.player.play('bii-walk', true);
+      }
     } else if (this.anims.exists('bii-idle')) {
-      if (this.player.anims.currentAnim?.key !== 'bii-idle') this.player.play('bii-idle', true);
+      if (this.player.anims.currentAnim?.key !== 'bii-idle') {
+        this.player.play('bii-idle', true);
+      }
     }
   }
 
@@ -703,8 +662,12 @@ class PrototypeScene extends Phaser.Scene {
     this.player.y = Phaser.Math.Clamp(this.player.y, FLOOR_TOP, FLOOR_BOTTOM);
     if (this.activeEncounter) {
       this.player.x = Phaser.Math.Clamp(this.player.x, this.lockLeft, this.lockRight);
-      if (this.player.x <= this.lockLeft + 1 && this.player.body.velocity.x < 0) this.player.setVelocityX(0);
-      if (this.player.x >= this.lockRight - 1 && this.player.body.velocity.x > 0) this.player.setVelocityX(0);
+      if (this.player.x <= this.lockLeft + 1 && this.player.body.velocity.x < 0) {
+        this.player.setVelocityX(0);
+      }
+      if (this.player.x >= this.lockRight - 1 && this.player.body.velocity.x > 0) {
+        this.player.setVelocityX(0);
+      }
     } else {
       this.player.x = Phaser.Math.Clamp(this.player.x, 40, WORLD_WIDTH - 40);
     }
@@ -739,7 +702,11 @@ class PrototypeScene extends Phaser.Scene {
   updateCombat(time) {
     if (this.stageComplete) return;
 
-    if (Phaser.Input.Keyboard.JustDown(this.keys.SPACE) && this.rage >= 100 && !this.isRageActive()) {
+    if (
+      Phaser.Input.Keyboard.JustDown(this.keys.SPACE) &&
+      this.rage >= 100 &&
+      !this.isRageActive()
+    ) {
       this.activateRage();
       return;
     }
@@ -751,8 +718,12 @@ class PrototypeScene extends Phaser.Scene {
     }
 
     if (this.grabbedEnemy) {
-      if (Phaser.Input.Keyboard.JustDown(this.keys.J) && time >= this.attackCooldown) this.punchGrabbedEnemy();
-      if (Phaser.Input.Keyboard.JustDown(this.keys.K) && time >= this.attackCooldown) this.throwGrabbedEnemy();
+      if (Phaser.Input.Keyboard.JustDown(this.keys.J) && time >= this.attackCooldown) {
+        this.punchGrabbedEnemy();
+      }
+      if (Phaser.Input.Keyboard.JustDown(this.keys.K) && time >= this.attackCooldown) {
+        this.throwGrabbedEnemy();
+      }
       return;
     }
 
@@ -762,11 +733,21 @@ class PrototypeScene extends Phaser.Scene {
     }
 
     if (Phaser.Input.Keyboard.JustDown(this.keys.K) && time >= this.attackCooldown) {
-      if (this.isDashing) this.doDashAttack(true);
-      else if (this.comboCount >= 2 && time <= this.comboExpireAt) this.doComboFinisher();
-      else {
+      if (this.isDashing) {
+        this.doDashAttack(true);
+      } else if (this.comboCount >= 2 && time <= this.comboExpireAt) {
+        this.doComboFinisher();
+      } else {
         this.comboCount = 0;
-        this.doAttack({ type: 'heavy', damage: 2, range: 108, knockback: 310, stun: 400, cooldown: 470, knockdown: true });
+        this.doAttack({
+          type: 'heavy',
+          damage: 2,
+          range: 108,
+          knockback: 310,
+          stun: 400,
+          cooldown: 470,
+          knockdown: true,
+        });
       }
     }
   }
@@ -778,10 +759,12 @@ class PrototypeScene extends Phaser.Scene {
     this.enemies.forEach((enemy) => {
       if (!enemy.active || enemy.grabbed || enemy.thrownUntil > this.time.now) return;
       if (enemy.knockedDownUntil > this.time.now) return;
+
       const dx = enemy.x - this.player.x;
       const dy = Math.abs(enemy.y - this.player.y);
       const inFront = Math.sign(dx || this.player.facing) === this.player.facing;
       const distance = Math.abs(dx) + dy * 0.7;
+
       if (inFront && Math.abs(dx) <= 76 && dy <= 46 && distance < bestDistance) {
         target = enemy;
         bestDistance = distance;
@@ -861,9 +844,11 @@ class PrototypeScene extends Phaser.Scene {
   releaseGrab(pushAway = true) {
     const enemy = this.grabbedEnemy;
     if (!enemy) return;
+
     this.grabbedEnemy = null;
     this.grabPunchCount = 0;
     if (!enemy.active) return;
+
     enemy.grabbed = false;
     enemy.body.enable = true;
     enemy.body.moves = true;
@@ -873,17 +858,40 @@ class PrototypeScene extends Phaser.Scene {
 
   doLightComboAttack(time) {
     this.playPunchAnimation();
+
     if (time > this.comboExpireAt) this.comboCount = 0;
     this.comboCount = Phaser.Math.Clamp(this.comboCount + 1, 1, 3);
     this.comboExpireAt = time + COMBO_WINDOW;
     const step = this.comboCount;
 
     if (step === 1) {
-      this.doAttack({ type: 'light1', damage: 1, range: 82, knockback: 95, stun: 165, cooldown: 175 });
+      this.doAttack({
+        type: 'light1',
+        damage: 1,
+        range: 82,
+        knockback: 95,
+        stun: 165,
+        cooldown: 175,
+      });
     } else if (step === 2) {
-      this.doAttack({ type: 'light2', damage: 1, range: 88, knockback: 120, stun: 185, cooldown: 190 });
+      this.doAttack({
+        type: 'light2',
+        damage: 1,
+        range: 88,
+        knockback: 120,
+        stun: 185,
+        cooldown: 190,
+      });
     } else {
-      this.doAttack({ type: 'light3', damage: 2, range: 98, knockback: 250, stun: 300, cooldown: 260, knockdown: true });
+      this.doAttack({
+        type: 'light3',
+        damage: 2,
+        range: 98,
+        knockback: 250,
+        stun: 300,
+        cooldown: 260,
+        knockdown: true,
+      });
       this.comboCount = 0;
     }
 
@@ -894,7 +902,16 @@ class PrototypeScene extends Phaser.Scene {
     this.comboCount = 0;
     this.comboExpireAt = 0;
     this.flashComboLabel('重拳终结！');
-    this.doAttack({ type: 'finisher', damage: 4, range: 124, knockback: 480, stun: 650, cooldown: 600, knockdown: true, shake: 0.011 });
+    this.doAttack({
+      type: 'finisher',
+      damage: 4,
+      range: 124,
+      knockback: 480,
+      stun: 650,
+      cooldown: 600,
+      knockdown: true,
+      shake: 0.011,
+    });
   }
 
   doDashAttack(heavy) {
@@ -902,6 +919,7 @@ class PrototypeScene extends Phaser.Scene {
     this.player.clearTint();
     this.flashComboLabel(heavy ? '肌肉碧究极冲撞！' : '冲刺拳！');
     if (!heavy) this.playPunchAnimation();
+
     this.doAttack({
       type: heavy ? 'dashHeavy' : 'dashLight',
       damage: heavy ? 5 : 2,
@@ -919,6 +937,7 @@ class PrototypeScene extends Phaser.Scene {
     const damage = config.damage * rageMultiplier;
     const knockback = config.knockback * (this.isRageActive() ? 1.45 : 1);
     this.attackCooldown = this.time.now + config.cooldown;
+
     const attackX = this.player.x + this.player.facing * Math.max(48, config.range * 0.48);
     const isBig = ['heavy', 'finisher', 'dashHeavy'].includes(config.type);
     this.spawnHitFlash(attackX, this.player.y, isBig, config.range);
@@ -926,6 +945,7 @@ class PrototypeScene extends Phaser.Scene {
     let hitCount = 0;
     this.enemies.forEach((enemy) => {
       if (!enemy.active || enemy.grabbed) return;
+
       const dx = enemy.x - this.player.x;
       const dy = Math.abs(enemy.y - this.player.y);
       const inFront = Math.sign(dx || this.player.facing) === this.player.facing;
@@ -937,19 +957,40 @@ class PrototypeScene extends Phaser.Scene {
       enemy.setTintFill(0xffffff);
       this.time.delayedCall(75, () => enemy.active && enemy.clearTint());
       enemy.setVelocity(this.player.facing * knockback, 0);
-      if (config.knockdown && enemy.hp > 0) this.knockDownEnemy(enemy, config.stun + 650);
+
+      if (config.knockdown && enemy.hp > 0) {
+        this.knockDownEnemy(enemy, config.stun + 650);
+      }
       if (enemy.hp <= 0) this.defeatEnemy(enemy, knockback);
     });
 
     if (hitCount > 0) {
-      const rageGain = config.type === 'finisher' || config.type === 'dashHeavy' ? 18 : isBig ? 11 : 7;
-      if (!this.isRageActive()) this.rage = Phaser.Math.Clamp(this.rage + rageGain * hitCount, 0, 100);
-      this.cameras.main.shake(isBig ? 90 : 45, config.shake ?? (isBig ? 0.007 : 0.0025));
+      const rageGain =
+        config.type === 'finisher' || config.type === 'dashHeavy'
+          ? 18
+          : isBig
+            ? 11
+            : 7;
+      if (!this.isRageActive()) {
+        this.rage = Phaser.Math.Clamp(this.rage + rageGain * hitCount, 0, 100);
+      }
+      this.cameras.main.shake(
+        isBig ? 90 : 45,
+        config.shake ?? (isBig ? 0.007 : 0.0025),
+      );
     }
   }
 
   spawnHitFlash(x, y, big = false, width = null) {
-    const flash = this.add.rectangle(x, y, width ?? (big ? 112 : 58), big ? 62 : 44, big ? 0xffa629 : 0xffff9c, 0.48).setDepth(9999);
+    const flash = this.add.rectangle(
+      x,
+      y,
+      width ?? (big ? 112 : 58),
+      big ? 62 : 44,
+      big ? 0xffa629 : 0xffff9c,
+      0.48,
+    ).setDepth(9999);
+
     this.tweens.add({
       targets: flash,
       alpha: 0,
@@ -979,6 +1020,7 @@ class PrototypeScene extends Phaser.Scene {
   defeatEnemy(enemy, knockback = 280) {
     if (!enemy.active) return;
     if (this.grabbedEnemy === enemy) this.grabbedEnemy = null;
+
     enemy.grabbed = false;
     if (enemy.body) enemy.body.enable = false;
 
@@ -1017,7 +1059,12 @@ class PrototypeScene extends Phaser.Scene {
 
       const dx = this.player.x - enemy.x;
       const dy = this.player.y - enemy.y;
-      const distance = Phaser.Math.Distance.Between(enemy.x, enemy.y, this.player.x, this.player.y);
+      const distance = Phaser.Math.Distance.Between(
+        enemy.x,
+        enemy.y,
+        this.player.x,
+        this.player.y,
+      );
 
       if (distance > 78) {
         const direction = new Phaser.Math.Vector2(dx, dy).normalize();
@@ -1041,6 +1088,7 @@ class PrototypeScene extends Phaser.Scene {
       this.enemies.forEach((target) => {
         if (!target.active || target === thrownEnemy || target.grabbed) return;
         if (thrownEnemy.throwHitTargets.has(target)) return;
+
         const dx = Math.abs(target.x - thrownEnemy.x);
         const dy = Math.abs(target.y - thrownEnemy.y);
         if (dx > 58 || dy > 48) return;
@@ -1050,11 +1098,13 @@ class PrototypeScene extends Phaser.Scene {
         target.stunUntil = time + 700;
         target.setTintFill(0xffffff);
         this.time.delayedCall(80, () => target.active && target.clearTint());
+
         const direction = Math.sign(thrownEnemy.body.velocity.x || this.player.facing);
         target.setVelocity(direction * 420, 0);
         this.knockDownEnemyFromThrow(target, direction, 1050);
         this.spawnHitFlash(target.x, target.y, true, 90);
         this.cameras.main.shake(100, 0.01);
+
         if (target.hp <= 0) this.defeatEnemy(target, 430);
       });
     });
@@ -1062,13 +1112,28 @@ class PrototypeScene extends Phaser.Scene {
 
   enemyAttack(enemy) {
     if (this.time.now < this.player.invulnerableUntil || this.isRageActive()) return;
+
     const dx = Math.abs(enemy.x - this.player.x);
     const dy = Math.abs(enemy.y - this.player.y);
     if (dx > 88 || dy > 54) return;
 
     const direction = Math.sign(this.player.x - enemy.x) || 1;
-    const flash = this.add.rectangle(enemy.x + direction * 35, enemy.y, 58, 36, 0xff6b6b, 0.45).setDepth(9998);
-    this.tweens.add({ targets: flash, alpha: 0, duration: 100, onComplete: () => flash.destroy() });
+    const flash = this.add.rectangle(
+      enemy.x + direction * 35,
+      enemy.y,
+      58,
+      36,
+      0xff6b6b,
+      0.45,
+    ).setDepth(9998);
+
+    this.tweens.add({
+      targets: flash,
+      alpha: 0,
+      duration: 100,
+      onComplete: () => flash.destroy(),
+    });
+
     this.hurtPlayer(direction);
   }
 
@@ -1081,9 +1146,11 @@ class PrototypeScene extends Phaser.Scene {
     this.player.setTintFill(0xff5c5c);
     this.player.setVelocity(direction * 220, 0);
     this.cameras.main.shake(90, 0.009);
+
     this.time.delayedCall(110, () => {
       if (this.player.active && !this.isRageActive()) this.player.clearTint();
     });
+
     if (this.player.hp <= 0) this.endGame();
   }
 
