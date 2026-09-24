@@ -15,3 +15,15 @@ canvas {
   margin: 0 auto;
   image-rendering: pixelated;
 }
+
+#app { height: calc(100% - 44px); }
+.play-modes {
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: clamp(12px, 3vw, 32px);
+  font-size: 14px;
+}
+.play-modes a { color: #e4cf96; text-underline-offset: 4px; }
+.play-modes a:hover, .play-modes a:focus-visible { color: #fff; }

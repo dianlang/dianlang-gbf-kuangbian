@@ -1,3 +1,5 @@
+import { SIETE } from './boss-combat.js';
+
 // Enemy balance and combat rules. Times are in milliseconds.
 export const ENEMY_TYPES = Object.freeze({
   raider: Object.freeze({
@@ -9,6 +11,10 @@ export const ENEMY_TYPES = Object.freeze({
     name: '斯巴达', texture: 'enemy-spartan', hp: 10, speed: 38, speedVariation: 3,
     guard: true, turnDelay: 450, recovery: 650,
     lightWindup: 740, heavyWindup: 740, cooldownMin: 1500, cooldownMax: 1850,
+  }),
+  siete: Object.freeze({
+    name: '希耶提 · 神将形态', texture: 'boss-siete', hp: SIETE.hp,
+    speed: SIETE.speed, speedVariation: 0, guard: false, boss: true,
   }),
 });
 

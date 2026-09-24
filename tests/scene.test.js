@@ -1,8 +1,17 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import * as playerState from '../src/player-state.js';
 import * as enemyTypes from '../src/enemy-types.js';
+import * as playerActions from '../src/player-actions.js';
+import * as playerArt from '../src/player-art.js';
+import { BOSS_METHODS } from '../src/boss-scene.js';
+import { createBossState, createBossAttack } from '../src/boss-combat.js';
+
+const require = createRequire(import.meta.url);
+const ArcadeBody = require('phaser/src/physics/arcade/Body.js');
+const ArcadeWorld = require('phaser/src/physics/arcade/World.js');
 
 // Exercise the production scene with small engine doubles; no DOM or renderer.
 // Actual Phaser bundling is checked separately by npm run build.
@@ -12,6 +21,7 @@ const source = readFileSync(new URL('../src/main.js', import.meta.url), 'utf8')
 
 class Vector2 {
   constructor(x, y) { this.x = x; this.y = y; }
+  copy(other) { this.x = other.x; this.y = other.y; return this; }
   lengthSq() { return this.x ** 2 + this.y ** 2; }
   normalize() { return this.scale(1 / (Math.hypot(this.x, this.y) || 1)); }
   scale(n) { this.x *= n; this.y *= n; return this; }
@@ -32,17 +42,17 @@ const Phaser = {
     Vector2,
   },
 };
-const dependencies = { ...playerState, ...enemyTypes };
+const dependencies = { ...playerState, ...enemyTypes, ...playerActions, ...playerArt, BOSS_METHODS };
 const Scene = new Function('Phaser', ...Object.keys(dependencies), source)(
   Phaser, ...Object.values(dependencies),
 );
 
 function sprite(x = 200, y = 400) {
-  return {
-    active: true, x, y, angle: 0, alpha: 1, hp: 10, facing: 1, baseSpeed: 150,
+  const object = {
+    active: true, x, y, angle: 0, alpha: 1, hp: 10, maxHp: 10, facing: 1, baseSpeed: 150,
     body: { enable: true, velocity: { x: 0, y: 0 } },
     anims: { isPlaying: true, stop() { this.isPlaying = false; } },
-    setVelocity(x, y) { this.body.velocity = { x, y }; return this; },
+    setVelocity(x, y) { this.body.velocity.x = x; this.body.velocity.y = y; return this; },
     setVelocityX(x) { this.body.velocity.x = x; return this; },
     setAngularVelocity() { return this; },
     setAngle(angle) { this.angle = angle; return this; },
@@ -52,8 +62,19 @@ function sprite(x = 200, y = 400) {
     setFlipX() { return this; }, setText() { return this; },
     setOrigin() { return this; }, setScrollFactor() { return this; },
     setStrokeStyle() { return this; },
+    setVisible(visible) { this.visible = visible; return this; },
+    setFillStyle() { return this; }, setCollideWorldBounds() { return this; },
+    once() { return this; },
     destroy() { this.active = false; },
   };
+  Object.assign(object.body, {
+    position: new Vector2(x, y), prev: new Vector2(x, y), prevFrame: new Vector2(x, y),
+    stop() { this.velocity.x = 0; this.velocity.y = 0; },
+    updateFromGameObject() { this.position.copy(object); },
+    setSize() { return this; }, setOffset() { return this; },
+    reset(x, y) { object.x = x; object.y = y; },
+  });
+  return object;
 }
 
 function scene() {
@@ -65,10 +86,11 @@ function scene() {
   s.cursors = { left: {}, right: {}, up: {}, down: {} };
   s.comboText = sprite();
   s.areaText = sprite();
-  s.cameras = { main: { shake() {}, flash() {} } };
+  s.cameras = { main: { shake() {}, flash() {}, stopFollow() {}, pan() {}, setScroll() {} } };
   s.tweens = { items: [], add(config) { this.items.push(config); } };
   s.physics = { world: { paused: false, pause() { this.paused = true; } } };
-  s.add = { rectangle: () => sprite(), text: () => sprite() };
+  s.add = { rectangle: () => sprite(), text: () => sprite(), ellipse: () => sprite() };
+  s.enemyHint = sprite();
   s.flashComboLabel = () => {};
   return s;
 }
@@ -315,6 +337,172 @@ function spartan(x = 240) {
   });
 }
 
+function siete(x = 240) {
+  return Object.assign(enemy(x), createBossState(), {
+    kind: 'siete', hp: 90, maxHp: 90, facing: -1, speed: 65, recoveryUntil: 0,
+  });
+}
+
+test('boss spawning creates its own phase state, body and HUD without changing small enemies', () => {
+  const s = scene();
+  s.physics.add = { sprite: (x, y) => sprite(x, y) };
+  s.spawnEnemy(4210, 405, 0, 'siete');
+  assert.equal(s.boss, s.enemies[0]);
+  assert.equal(s.boss.hp, 90);
+  assert.equal(s.boss.phase, 'normal');
+  assert.equal(s.bossHpBar.width, 440);
+  assert.equal(s.boss.nameTag, undefined);
+  assert.equal(enemyTypes.enemyProfile().hp, 6);
+});
+
+test('boss armor resists grab, knockdown and flinching but still takes each attack once', () => {
+  const s = scene();
+  const b = siete();
+  s.enemies = [b];
+  s.startBossAttack(b, createBossAttack(b, s.player, s.bossBounds(), 1000));
+  const cast = b.pendingAttack;
+  s.tryGrabEnemy();
+  assert.equal(s.grabbedEnemy, null);
+  const targets = new Set();
+  s.doAttack(playerActions.PLAYER_ATTACKS.heavy, targets);
+  s.doAttack(playerActions.PLAYER_ATTACKS.heavy, targets);
+  assert.equal(b.hp, 88);
+  assert.equal(b.pendingAttack, cast);
+  assert.equal(b.knockedDownUntil, 0);
+  assert.equal(b.body.velocity.x, 0);
+  assert.equal(b.angle, 0);
+});
+
+test('boss telegraphs wait for contact, miss a player who leaves, and preserve recovery', () => {
+  const s = scene();
+  const b = siete();
+  s.enemies = [b];
+  s.updateEnemies(1000);
+  const cast = b.pendingAttack;
+  assert.ok(cast);
+  s.time.now = cast.hitAt - 1;
+  s.updateEnemies(s.time.now);
+  assert.equal(s.player.hp, 10);
+  s.player.y = 490;
+  s.time.now = cast.hitAt;
+  s.updateEnemies(s.time.now);
+  assert.equal(s.player.hp, 10);
+  assert.equal(b.pendingAttack, null);
+  assert.equal(b.recoveryUntil, s.time.now + cast.recovery);
+  assert.ok(cast.markers.every(marker => !marker.active));
+  s.updateEnemies(s.time.now + 1);
+  assert.equal(b.pendingAttack, null);
+  assert.equal(b.body.velocity.x, 0);
+});
+
+test('overlapping boss areas deal a single hit and a long frame cannot replay the cast', () => {
+  const s = scene();
+  const b = siete();
+  Object.assign(b, { phase: 'overdrive', hp: 50, attackCount: 2 });
+  s.enemies = [b];
+  s.startBossAttack(b, createBossAttack(b, s.player, s.bossBounds(), 1000));
+  const cast = b.pendingAttack;
+  s.time.now = cast.hitAt + 3000;
+  s.updateEnemies(s.time.now);
+  assert.equal(s.player.hp, 8);
+  s.updateEnemies(s.time.now);
+  assert.equal(s.player.hp, 8);
+});
+
+test('Break destroys all warnings, prevents the pending hit and gives a damage window', () => {
+  const s = scene();
+  const b = siete();
+  Object.assign(b, { phase: 'overdrive', hp: 50, modeGauge: 10 });
+  s.enemies = [b];
+  s.startBossAttack(b, createBossAttack(b, s.player, s.bossBounds(), 1000));
+  const cast = b.pendingAttack;
+  s.doAttack(playerActions.PLAYER_ATTACKS.heavy);
+  assert.equal(b.phase, 'break');
+  assert.equal(b.pendingAttack, null);
+  assert.ok(cast.markers.every(marker => !marker.active));
+  assert.equal(cast.label.active, false);
+  s.time.now = cast.hitAt;
+  s.updateEnemies(s.time.now);
+  assert.equal(s.player.hp, 10);
+  s.doAttack(playerActions.PLAYER_ATTACKS.heavy);
+  assert.equal(b.hp, 45);
+  s.time.now = b.breakUntil;
+  s.updateEnemies(s.time.now);
+  assert.equal(b.phase, 'normal');
+  assert.equal(b.pendingAttack, null);
+});
+
+test('thrown enemies hurt the boss once without spinning, launching or knocking it down', () => {
+  const s = scene();
+  const b = siete();
+  Object.assign(b, { phase: 'overdrive', hp: 50 });
+  const thrown = enemy(220);
+  thrown.thrownUntil = 1600;
+  thrown.throwHitTargets = new Set();
+  thrown.setVelocity(650, 0);
+  s.enemies = [b, thrown];
+  s.updateThrownEnemies(1000);
+  s.updateThrownEnemies(1100);
+  assert.equal(b.hp, 48);
+  assert.equal(b.modeGauge, 80);
+  assert.equal(b.knockedDownUntil, 0);
+  assert.equal(b.body.velocity.x, 0);
+  assert.equal(b.angle, 0);
+});
+
+test('clearing six waves still requires the boss, and its delayed spawn cannot finish the stage', () => {
+  const s = scene();
+  s.encounters.filter(e => !e.boss).forEach(e => { e.cleared = true; });
+  s.player.x = 4350;
+  s.updateStageFlow();
+  assert.equal(s.activeEncounter.boss, true);
+  assert.equal(s.stageComplete, false);
+  assert.equal(s.waveTransitionPending, true);
+  assert.equal(s.bossCheckpoint, true);
+  s.updateStageFlow();
+  assert.equal(s.time.calls.length, 1);
+  assert.equal(s.stageComplete, false);
+});
+
+test('boss practice skips only the prior waves and R retries at the boss after death', () => {
+  const s = scene();
+  s.player.hp = 1;
+  s.startBossPractice();
+  assert.ok(s.encounters.filter(e => !e.boss).every(e => e.cleared));
+  assert.equal(s.activeEncounter.cleared, false);
+  assert.equal(s.player.hp, 10);
+  assert.ok(s.player.x > s.lockLeft && s.player.x < s.lockRight);
+  s.endGame();
+  let data;
+  s.scene = { restart(args) { data = args; } };
+  s.keys.R._justDown = true;
+  s.update(1100, 16);
+  assert.deepEqual(data, { bossPractice: true });
+  s.init(data);
+  assert.equal(s.bossPractice, true);
+  assert.equal(s.boss, null);
+  assert.equal(s.pendingWaveSpawns, 0);
+});
+
+test('defeating the boss cancels its attack and completes the stage once the wave settles', () => {
+  const s = scene();
+  const b = siete();
+  s.enemies = [b];
+  s.activeEncounter = s.encounters.find(e => e.boss);
+  s.currentWaveIndex = 0;
+  s.startBossAttack(b, createBossAttack(b, s.player, s.bossBounds(), 1000));
+  s.hitBoss(b, 100, 'finisher');
+  assert.equal(b.defeated, true);
+  assert.equal(b.pendingAttack, null);
+  s.time.calls = [];
+  s.updateStageFlow();
+  assert.equal(s.time.calls.length, 1);
+  s.time.calls[0].callback();
+  assert.equal(s.stageComplete, true);
+  assert.equal(s.physics.world.paused, true);
+  assert.equal(s.activeEncounter, null);
+});
+
 test('a blocked punch deals no damage or rage and cannot interrupt a shield bash', () => {
   const s = scene();
   const e = spartan();
@@ -389,7 +577,7 @@ test('a missed shield bash has a punishable recovery window', () => {
 
 test('encounters introduce one defender before increasing mixed-wave pressure', () => {
   const s = scene();
-  const counts = s.encounters.flatMap((encounter) => encounter.waves)
+  const counts = s.encounters.filter(encounter => !encounter.boss).flatMap((encounter) => encounter.waves)
     .map((wave) => wave.filter((pos) => pos.kind === 'spartan').length);
   assert.deepEqual(counts, [0, 1, 1, 2, 2, 2]);
   s.activeEncounter = s.encounters[0];
@@ -426,4 +614,275 @@ test('a thrown raider can knock down a guarding defender and hit it only once', 
   assert.ok(target.knockedDownUntil > 1000);
   s.updateThrownEnemies(1000);
   assert.equal(target.hp, 8);
+});
+
+function tickAction(s, time) {
+  s.time.now = time;
+  s.updatePlayerAction(time);
+}
+
+test('a heavy windup deals no damage until its contact pose and hits each target once', () => {
+  const s = scene();
+  const e = enemy(240); s.enemies = [e];
+  s.keys.K._justDown = true; s.updateCombat(1000);
+  assert.equal(s.playerAction.name, 'heavy');
+  assert.equal(e.hp, 6);
+  tickAction(s, 1179); assert.equal(e.hp, 6);
+  tickAction(s, 1180); assert.equal(e.hp, 4);
+  tickAction(s, 1190); tickAction(s, 1220); assert.equal(e.hp, 4);
+  assert.equal(s.attackCooldown, 1470);
+  tickAction(s, 1470); assert.equal(s.playerAction, null);
+});
+
+test('being hit during windup cancels the pending attack and combo buffer', () => {
+  const s = scene();
+  const e = enemy(240); s.enemies = [e];
+  s.doLightComboAttack(1000);
+  s.time.now = 1080; s.keys.J._justDown = true; s.updateCombat(1080);
+  assert.ok(s.bufferedAttack);
+  s.hurtPlayer(-1);
+  tickAction(s, 1200);
+  assert.equal(e.hp, 6);
+  assert.equal(s.playerAction, null);
+  assert.equal(s.bufferedAttack, null);
+});
+
+test('buffered J-J-K completes in order, while movement cannot turn a punch mid-swing', () => {
+  const s = scene();
+  s.doLightComboAttack(1000);
+  s.keys.A.isDown = true;
+  s.updatePlayerMovement();
+  assert.equal(s.player.facing, 1);
+  assert.equal(s.player.body.velocity.x, 0);
+  s.time.now = 1110; s.keys.J._justDown = true; s.updateCombat(1110);
+  tickAction(s, 1200); s.updateCombat(1200);
+  assert.equal(s.playerAction.name, 'light2');
+  s.time.now = 1320; s.keys.K._justDown = true; s.updateCombat(1320);
+  tickAction(s, 1420); s.updateCombat(1420);
+  assert.equal(s.playerAction.name, 'finisher');
+});
+
+test('an early input is discarded and simultaneous combat keys cannot leak into a later action', () => {
+  const s = scene();
+  s.doLightComboAttack(1000);
+  s.time.now = 1010; s.keys.J._justDown = true; s.updateCombat(1010);
+  assert.equal(s.bufferedAttack, null);
+  tickAction(s, 1200); s.updateCombat(1200);
+  assert.equal(s.playerAction, null);
+  for (const key of ['J', 'K', 'L']) s.keys[key]._justDown = true;
+  s.updateCombat(1200);
+  assert.equal(s.playerAction.name, 'grab');
+  assert.ok(['J', 'K', 'L'].every(key => !s.keys[key]._justDown));
+});
+
+test('grab, pummel, and throw each resolve on their own contact frame', () => {
+  const s = scene();
+  const e = enemy(240); s.enemies = [e];
+  s.keys.L._justDown = true; s.updateCombat(1000);
+  assert.equal(s.grabbedEnemy, null);
+  tickAction(s, 1100); assert.equal(s.grabbedEnemy, e);
+  tickAction(s, 1220);
+  s.keys.J._justDown = true; s.updateCombat(1220);
+  assert.equal(e.hp, 6);
+  tickAction(s, 1280); assert.equal(e.hp, 5);
+  tickAction(s, 1280); assert.equal(e.hp, 5);
+  tickAction(s, 1450);
+  s.keys.K._justDown = true; s.updateCombat(1450);
+  assert.equal(e.body.enable, false);
+  tickAction(s, 1610);
+  assert.equal(s.grabbedEnemy, null);
+  assert.equal(e.body.enable, true);
+  assert.ok(e.thrownUntil > 1610);
+});
+
+test('interrupting a throw releases the held enemy without launching a delayed throw', () => {
+  const s = scene();
+  const e = enemy(240); s.enemies = [e]; s.tryGrabEnemy();
+  s.time.now = 1220; s.beginPlayerAction('throw');
+  s.time.now = 1250; s.hurtPlayer(-1);
+  tickAction(s, 1500);
+  assert.equal(e.grabbed, false);
+  assert.equal(e.body.enable, true);
+  assert.equal(e.thrownUntil, 0);
+});
+
+test('dash attack brakes on startup and can hit a new enemy entering its stationary range', () => {
+  const s = scene();
+  const e = enemy(240), later = enemy(390); s.enemies = [e, later];
+  s.startDash(1); s.doDashAttack(true);
+  s.updatePlayerMovement(); assert.equal(s.player.body.velocity.x, 0);
+  assert.equal(s.isDashing, false);
+  assert.equal(s.dashUntil, 0);
+  tickAction(s, 1080); assert.equal(e.hp, 1); assert.equal(later.hp, 6);
+  later.x = 300; tickAction(s, 1160);
+  assert.equal(e.hp, 1); assert.equal(later.hp, 1);
+  tickAction(s, 1320); s.updatePlayerMovement();
+  assert.equal(s.player.body.velocity.x, 0);
+  assert.equal(s.player.x, 200);
+});
+
+// Exercise the actual frame ordering while leaving unrelated HUD/stage work out.
+function tickScene(s, time) {
+  const delta = time - s.time.now;
+  s.time.now = time;
+  s.updateStageFlow = () => {};
+  s.updateUi = () => {};
+  s.update(time, delta);
+}
+
+test('every attack brakes both axes through recovery and resumes held movement afterwards', () => {
+  const names = [...Object.keys(playerActions.PLAYER_ATTACKS), 'grab', 'grabPunch', 'throw', 'release', 'rage'];
+  for (const name of names) {
+    for (const direction of [-1, 1]) {
+      const s = scene();
+      s.player.facing = direction;
+      s.player.setVelocity(direction * 520, 120);
+      s.keys[direction > 0 ? 'A' : 'D'].isDown = true;
+      s.keys.S.isDown = true;
+      s.beginPlayerAction(name, playerActions.PLAYER_ATTACKS[name]);
+      const endsAt = s.playerAction.endsAt;
+      assert.deepEqual(s.player.body.velocity, { x: 0, y: 0 }, name);
+      for (const time of [1001, endsAt - 1]) {
+        tickScene(s, time);
+        assert.equal(s.player.facing, direction, name);
+        assert.deepEqual(s.player.body.velocity, { x: 0, y: 0 }, name);
+      }
+      tickScene(s, endsAt);
+      assert.equal(s.playerAction, null, name);
+      assert.equal(Math.sign(s.player.body.velocity.x), -direction, name);
+      assert.ok(s.player.body.velocity.y > 0, name);
+    }
+  }
+});
+
+test('buffered combos stay facing forward across full scene updates, including the first buffer frame', () => {
+  for (const lastKey of ['J', 'K']) {
+    const s = scene();
+    s.keys.J._justDown = true;
+    tickScene(s, 1000);
+    s.keys.A.isDown = true;
+    s.keys.W.isDown = true;
+    // Earliest eligible buffer press, then a real frame overshoot at recovery.
+    s.keys.J._justDown = true;
+    tickScene(s, 1060);
+    tickScene(s, 1208);
+    assert.equal(s.playerAction.name, 'light2');
+    assert.equal(s.player.facing, 1);
+    assert.deepEqual(s.player.body.velocity, { x: 0, y: 0 });
+    s.keys[lastKey]._justDown = true;
+    tickScene(s, 1300);
+    tickScene(s, 1436);
+    assert.equal(s.playerAction.name, lastKey === 'J' ? 'light3' : 'finisher');
+    assert.equal(s.playerAction.facing, 1);
+    assert.deepEqual(s.player.body.velocity, { x: 0, y: 0 });
+  }
+});
+
+test('direction taps during an attack cannot dash or prime a dash after recovery', () => {
+  const s = scene();
+  s.handleDashTap('right');
+  s.beginPlayerAction('heavy', playerActions.PLAYER_ATTACKS.heavy);
+  s.time.now = 1400; s.handleDashTap('left');
+  s.time.now = 1430; s.handleDashTap('left'); s.startDash(-1);
+  assert.equal(s.isDashing, false);
+  assert.equal(s.player.facing, 1);
+  tickScene(s, 1470);
+  s.time.now = 1480; s.handleDashTap('left');
+  assert.equal(s.isDashing, false);
+  s.time.now = 1510; s.handleDashTap('left');
+  assert.equal(s.isDashing, true);
+  assert.equal(s.player.body.velocity.x, -520);
+});
+
+function useArcadeBody(s) {
+  // Real Phaser integration and postUpdate, with only rendering left out.
+  Object.assign(s.player, {
+    width: 256, height: 256, scaleX: 0.56, scaleY: 0.56,
+    displayWidth: 143.36, displayHeight: 143.36,
+    displayOriginX: 128, displayOriginY: 244 - 38 / 0.56,
+  });
+  const world = Object.assign(Object.create(ArcadeWorld.prototype), {
+    defaults: {}, gravity: { x: 0, y: 0 },
+    bounds: { x: 0, y: 0, right: 3600, bottom: 540 },
+    checkCollision: { left: true, right: true, up: true, down: true },
+  });
+  s.player.body = new ArcadeBody(world, s.player);
+  s.player.body.setSize(92, 150, false);
+  s.player.body.setOffset(82, 84);
+  s.player.body.collideWorldBounds = true;
+  return s.player.body;
+}
+
+test('real Arcade physics keeps every attack at its start position, even on the first moving frame', () => {
+  for (const fps of [30, 60, 144]) {
+    for (const direction of [-1, 1]) {
+      for (const name of Object.keys(playerActions.PLAYER_ATTACKS)) {
+        const s = scene(), body = useArcadeBody(s);
+        const delta = 1000 / fps;
+        s.player.facing = direction;
+        s.keys[direction > 0 ? 'A' : 'D'].isDown = true;
+        s.keys.W.isDown = true;
+        s.player.setVelocity(direction * 520, 150);
+        // Phaser has already integrated this frame before Scene.update runs.
+        body.preUpdate(true, delta / 1000);
+        s.beginPlayerAction(name, playerActions.PLAYER_ATTACKS[name]);
+        tickScene(s, 1000);
+        body.postUpdate();
+        const endsAt = s.playerAction.endsAt;
+        for (let time = 1000 + delta; time < endsAt; time += delta) {
+          body.preUpdate(true, delta / 1000);
+          tickScene(s, time);
+          body.postUpdate();
+          assert.equal(s.player.x, 200, `${name}, ${fps}fps, x`);
+          assert.equal(s.player.y, 400, `${name}, ${fps}fps, y`);
+          assert.equal(s.player.facing, direction, name);
+          assert.equal(body.deltaX(), 0, name);
+          assert.equal(body.deltaY(), 0, name);
+        }
+        // Recovery unlocks held input; the next physics step must actually move.
+        tickScene(s, endsAt);
+        body.preUpdate(true, delta / 1000);
+        tickScene(s, endsAt + delta);
+        body.postUpdate();
+        assert.equal(Math.sign(s.player.x - 200), -direction, name);
+        assert.ok(s.player.y < 400, name);
+      }
+    }
+  }
+});
+
+test('real Arcade physics still applies knockback after damage cancels the attack lock', () => {
+  const s = scene(), body = useArcadeBody(s);
+  s.keys.D.isDown = true;
+  s.beginPlayerAction('heavy', playerActions.PLAYER_ATTACKS.heavy);
+  s.hurtPlayer(-1);
+  body.preUpdate(true, 1 / 60);
+  tickScene(s, 1000 + 1000 / 60);
+  body.postUpdate();
+  assert.equal(s.playerAction, null);
+  assert.equal(s.playerState.phase, 'hurt');
+  assert.ok(s.player.x < 200);
+  assert.ok(body.velocity.x < 0);
+});
+
+test('a long frame resolves one scheduled contact and then completes recovery', () => {
+  const s = scene(); const e = enemy(240); s.enemies = [e];
+  s.beginPlayerAction('heavy', playerActions.PLAYER_ATTACKS.heavy);
+  tickAction(s, 1800);
+  assert.equal(e.hp, 4);
+  assert.equal(s.playerAction, null);
+  tickAction(s, 1900); assert.equal(e.hp, 4);
+});
+
+test('rage interrupts windup, releases a held enemy, and resets on a new run', () => {
+  const s = scene(); const e = enemy(240); s.enemies = [e]; s.tryGrabEnemy();
+  s.activateRage();
+  assert.equal(s.playerAction.name, 'rage');
+  assert.equal(s.grabbedEnemy, null);
+  assert.equal(e.body.enable, true);
+  s.hurtPlayer(-1, true); assert.equal(s.player.hp, 10);
+  s.init();
+  assert.equal(s.playerAction, null);
+  assert.equal(s.bufferedAttack, null);
+  assert.equal(s.rageUntil, 0);
 });
