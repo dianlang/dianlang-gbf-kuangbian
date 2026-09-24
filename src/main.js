@@ -1,15 +1,19 @@
 import Phaser from 'phaser';
 import './style.css';
+import { PLAYER_REACTION, createPlayerState, canPlayerAct, applyPlayerHit, advancePlayerState } from './player-state.js';
+import { enemyProfile, enemyCanGuard, enemyHitResponse, turnEnemyToward } from './enemy-types.js';
+import { PLAYER_ACTIONS, PLAYER_ATTACKS, COMBO_INPUT_BUFFER, actionFrame, createAction } from './player-actions.js';
+import { PLAYER_ART_SOURCES, preparePlayerTextures } from './player-art.js';
+import { BOSS_METHODS } from './boss-scene.js';
 
 const WIDTH = 960;
 const HEIGHT = 540;
-const WORLD_WIDTH = 3600;
+const WORLD_WIDTH = 4560;
 const FLOOR_TOP = 315;
 const FLOOR_BOTTOM = 500;
 const COMBO_WINDOW = 520;
 const RAGE_DURATION = 10000;
-const PLAYER_FRAME_SIZE = 256;
-const PLAYER_SCALE = 0.45;
+const PLAYER_SCALE = 0.56;
 const PLAYER_SPEED = 150;
 
 const ENCOUNTERS = [
@@ -27,7 +31,7 @@ const ENCOUNTERS = [
       [
         { x: 930, y: 450 },
         { x: 1110, y: 335 },
-        { x: 1280, y: 455 },
+        { x: 1280, y: 455, kind: 'spartan' },
         { x: 1410, y: 365 },
       ],
     ],
@@ -41,15 +45,15 @@ const ENCOUNTERS = [
       [
         { x: 1760, y: 350 },
         { x: 1920, y: 445 },
-        { x: 2100, y: 365 },
+        { x: 2100, y: 365, kind: 'spartan' },
         { x: 2250, y: 440 },
       ],
       [
         { x: 1690, y: 410 },
-        { x: 1840, y: 335 },
+        { x: 1840, y: 335, kind: 'spartan' },
         { x: 1990, y: 455 },
         { x: 2160, y: 350 },
-        { x: 2370, y: 420 },
+        { x: 2370, y: 420, kind: 'spartan' },
       ],
     ],
   },
@@ -61,25 +65,40 @@ const ENCOUNTERS = [
     waves: [
       [
         { x: 2670, y: 345 },
-        { x: 2820, y: 455 },
+        { x: 2820, y: 455, kind: 'spartan' },
         { x: 3000, y: 365 },
-        { x: 3170, y: 435 },
+        { x: 3170, y: 435, kind: 'spartan' },
       ],
       [
         { x: 2610, y: 420 },
-        { x: 2760, y: 345 },
+        { x: 2760, y: 345, kind: 'spartan' },
         { x: 2920, y: 455 },
-        { x: 3080, y: 340 },
+        { x: 3080, y: 340, kind: 'spartan' },
         { x: 3250, y: 430 },
         { x: 3370, y: 375 },
       ],
     ],
+  },
+  {
+    id: 'siete', name: '神将试炼', boss: true, triggerX: 3710, cameraX: 3600,
+    waves: [[{ x: 4210, y: 405, kind: 'siete' }]],
   },
 ];
 
 class PrototypeScene extends Phaser.Scene {
   constructor() {
     super('PrototypeScene');
+  }
+
+  init(data = {}) {
+    this.bossPractice = Boolean(data.bossPractice);
+    this.bossCheckpoint = false;
+    this.boss = null;
+    ['bossPanel', 'bossName', 'bossHpBg', 'bossHpBar', 'bossModeBg', 'bossModeBar', 'bossModeText']
+      .forEach(key => { this[key] = null; });
+    this.playerState = createPlayerState();
+    this.pendingWaveSpawns = 0;
+    this.spartanIntroduced = false;
     this.enemies = [];
     this.attackCooldown = 0;
     this.comboCount = 0;
@@ -93,6 +112,10 @@ class PrototypeScene extends Phaser.Scene {
     this.grabbedEnemy = null;
     this.grabPunchCount = 0;
     this.playerAttackAnimationUntil = 0;
+    this.playerAction = null;
+    this.bufferedAttack = null;
+    this.terminalAnimationAt = 0;
+    this.dashStartedAt = 0;
 
     this.encounters = ENCOUNTERS.map((item) => ({ ...item, cleared: false }));
     this.activeEncounter = null;
@@ -106,28 +129,18 @@ class PrototypeScene extends Phaser.Scene {
   }
 
   preload() {
-    this.load.spritesheet('bii-idle', '/characters/bii/idle.png', {
-      frameWidth: PLAYER_FRAME_SIZE,
-      frameHeight: PLAYER_FRAME_SIZE,
-    });
-
-    this.load.spritesheet('bii-walk', '/characters/bii/walk.png', {
-      frameWidth: PLAYER_FRAME_SIZE,
-      frameHeight: PLAYER_FRAME_SIZE,
-    });
-
-    this.load.spritesheet('bii-punch', '/characters/bii/punch.png', {
-      frameWidth: PLAYER_FRAME_SIZE,
-      frameHeight: PLAYER_FRAME_SIZE,
-    });
+    PLAYER_ART_SOURCES.forEach(source => this.load.image(`${source.key}-source`, `/characters/bii/${source.file}`));
   }
 
   create() {
+    this.physics.world.resume();
     this.physics.world.setBounds(0, 0, WORLD_WIDTH, HEIGHT);
     this.cameras.main.setBounds(0, 0, WORLD_WIDTH, HEIGHT);
     this.cameras.main.setBackgroundColor('#75b7db');
 
     this.makeTextures();
+    this.makeBossTexture();
+    preparePlayerTextures(this);
     this.createPlayerAnimations();
     this.createDeckStage();
     this.createUi();
@@ -138,6 +151,9 @@ class PrototypeScene extends Phaser.Scene {
 
     if (hasPlayerArt) {
       this.player.setScale(PLAYER_SCALE);
+      // Enemy art ends 38px below its lane coordinate. Keep the same floor
+      // while making Bii about 1.5 times as tall as the 76px common enemy.
+      this.player.setOrigin(0.5, (244 - 38 / PLAYER_SCALE) / 256);
       this.player.body.setSize(92, 150);
       this.player.body.setOffset(82, 84);
       if (this.anims.exists('bii-idle')) this.player.play('bii-idle');
@@ -150,7 +166,6 @@ class PrototypeScene extends Phaser.Scene {
     this.player.facing = 1;
     this.player.hp = 10;
     this.player.maxHp = 10;
-    this.player.invulnerableUntil = 0;
     this.player.setDepth(this.player.y);
 
     this.cursors = this.input.keyboard.createCursorKeys();
@@ -161,7 +176,11 @@ class PrototypeScene extends Phaser.Scene {
     this.cameras.main.startFollow(this.player, true, 0.1, 0.1, -120, 0);
     this.cameras.main.setDeadzone(360, 160);
 
-    this.showCenterMessage('格兰赛法甲板', '向右前进，击退来袭的骑空士！', 1700);
+    if (this.bossPractice || new URLSearchParams(window.location.search).get('boss') === 'siete') {
+      this.startBossPractice();
+    } else {
+      this.showCenterMessage('格兰赛法甲板', '向右前进，击退来袭的骑空士！', 1700);
+    }
   }
 
   createPlayerAnimations() {
@@ -177,7 +196,7 @@ class PrototypeScene extends Phaser.Scene {
     if (this.textures.exists('bii-walk') && !this.anims.exists('bii-walk')) {
       this.anims.create({
         key: 'bii-walk',
-        frames: this.anims.generateFrameNumbers('bii-walk', { start: 0, end: 7 }),
+        frames: this.anims.generateFrameNumbers('bii-walk', { start: 0, end: this.textures.get('bii-walk').frameTotal - 2 }),
         frameRate: 8,
         repeat: -1,
       });
@@ -264,7 +283,7 @@ class PrototypeScene extends Phaser.Scene {
   }
 
   createUi() {
-    this.add.text(24, 18, 'GBF 狂扁小朋友 原型 v0.5', {
+    this.add.text(24, 18, 'GBF 狂扁小朋友 原型 v0.9', {
       fontSize: '24px',
       color: '#ffffff',
       stroke: '#000000',
@@ -276,6 +295,10 @@ class PrototypeScene extends Phaser.Scene {
       color: '#ffffff',
       stroke: '#000000',
       strokeThickness: 4,
+    }).setScrollFactor(0).setDepth(30000);
+
+    this.enemyHint = this.add.text(24, 76, '', {
+      fontSize: '15px', color: '#ffe8ad', stroke: '#302315', strokeThickness: 4,
     }).setScrollFactor(0).setDepth(30000);
 
     this.statusText = this.add.text(WIDTH - 24, 18, '', {
@@ -330,6 +353,8 @@ class PrototypeScene extends Phaser.Scene {
   }
 
   makeTextures() {
+    if (this.textures.exists('bii') && this.textures.exists('enemy')
+      && this.textures.exists('enemy-spartan')) return;
     const g = this.add.graphics();
 
     g.fillStyle(0x2454a6, 1);
@@ -350,22 +375,48 @@ class PrototypeScene extends Phaser.Scene {
     g.fillStyle(0x3a2020, 1);
     g.fillCircle(30, 16, 17);
     g.generateTexture('enemy', 60, 76);
+    g.clear();
+
+    // A gold helmet and a shield on the facing side distinguish the defender.
+    g.fillStyle(0x355d75, 1);
+    g.fillRoundedRect(8, 20, 42, 48, 7);
+    g.fillStyle(0xe2b963, 1);
+    g.fillRoundedRect(10, 4, 38, 25, 6);
+    g.fillStyle(0x253747, 1);
+    g.fillRect(15, 14, 27, 6);
+    g.fillStyle(0xc34d48, 1);
+    g.fillRect(25, 0, 9, 9);
+    g.fillStyle(0x254157, 1);
+    g.fillRect(11, 64, 13, 12);
+    g.fillRect(33, 64, 13, 12);
+    g.fillStyle(0xe2b963, 1);
+    g.fillRoundedRect(38, 25, 21, 43, 7);
+    g.fillStyle(0x487a91, 1);
+    g.fillRoundedRect(42, 29, 13, 33, 5);
+    g.generateTexture('enemy-spartan', 60, 76);
     g.destroy();
   }
 
   bindDashInputs() {
-    const bind = (eventName, direction) => {
-      this.input.keyboard.on(eventName, () => this.handleDashTap(direction));
-    };
-
-    bind('keydown-LEFT', 'left');
-    bind('keydown-A', 'left');
-    bind('keydown-RIGHT', 'right');
-    bind('keydown-D', 'right');
+    const bindings = [
+      ['keydown-LEFT', 'left'], ['keydown-A', 'left'],
+      ['keydown-RIGHT', 'right'], ['keydown-D', 'right'],
+    ];
+    const keyboard = this.input.keyboard;
+    const handlers = bindings.map(([eventName, direction]) => {
+      const handler = (event) => {
+        if (!event.repeat) this.handleDashTap(direction);
+      };
+      keyboard.on(eventName, handler);
+      return [eventName, handler];
+    });
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
+      handlers.forEach(([eventName, handler]) => keyboard.off(eventName, handler));
+    });
   }
-
   handleDashTap(direction) {
-    if (!this.player || this.gameOver || this.grabbedEnemy) return;
+    if (!this.player || !this.canPlayerControl() || this.grabbedEnemy
+      || this.playerAction || this.time.now < this.attackCooldown) return;
     const now = this.time.now;
 
     if (now - this.lastHorizontalTap[direction] <= 260) {
@@ -377,31 +428,96 @@ class PrototypeScene extends Phaser.Scene {
   }
 
   startDash(direction) {
-    if (this.isDashing || this.time.now < this.attackCooldown || this.grabbedEnemy) return;
+    if (!this.canPlayerControl() || this.playerAction || this.isDashing
+      || this.time.now < this.attackCooldown || this.grabbedEnemy) return;
     this.isDashing = true;
+    this.dashStartedAt = this.time.now;
     this.dashUntil = this.time.now + 260;
     this.player.facing = direction;
     this.player.setVelocity(direction * 520, 0);
-    this.player.setTint(0xc8f7ff);
+    this.player.setFlipX(direction < 0);
   }
 
-  update(time) {
-    if (this.gameOver) {
-      if (Phaser.Input.Keyboard.JustDown(this.keys.R)) this.scene.restart();
+  update(time, delta) {
+    if (this.gameOver || this.stageComplete) {
+      this.updatePlayerVisual(time);
+      this.clearCombatPresses();
+      if (Phaser.Input.Keyboard.JustDown(this.keys.R)) this.scene.restart({ bossPractice: this.bossCheckpoint });
       return;
     }
 
+    this.updatePlayerReaction(time, delta);
     this.updateStageFlow();
+    if (this.stageComplete) return;
     this.updateRage(time);
     this.updateDash(time);
-    this.updateHeldEnemy();
-    this.updatePlayerMovement();
+    this.updatePlayerAction(time);
+    // Start buffered follow-ups before held directions can move or turn Bii.
     this.updateCombat(time);
+    this.updatePlayerMovement();
+    this.updateHeldEnemy();
     this.updateEnemies(time);
+    if (this.gameOver) {
+      this.updateUi(time);
+      return;
+    }
     this.updateThrownEnemies(time);
+    this.enforcePlayerBounds();
+    this.updatePlayerAppearance(time);
+    this.updatePlayerVisual(time);
     this.updateUi(time);
   }
 
+  canPlayerControl() {
+    return !this.gameOver && !this.stageComplete && canPlayerAct(this.playerState);
+  }
+
+  clearCombatPresses() {
+    ['J', 'K', 'L', 'SPACE'].forEach((key) => Phaser.Input.Keyboard.JustDown(this.keys[key]));
+  }
+
+  updatePlayerReaction(time, delta) {
+    const previousPhase = this.playerState.phase;
+    const phase = advancePlayerState(this.playerState, time);
+    if (phase !== previousPhase) {
+      this.player.setVelocity(0, 0);
+      if (phase === 'ready') {
+        this.player.setAngle(0);
+        this.updatePlayerAnimation(false);
+      }
+    }
+    if (phase === 'hurt' || phase === 'knockdown') {
+      const damping = Math.exp(-Math.max(0, delta) / 90);
+      this.player.setVelocity(this.player.body.velocity.x * damping, 0);
+    } else if (phase === 'getup') {
+      this.player.setVelocity(0, 0);
+    }
+    if (this.player.usesSpriteArt) {
+      this.player.setAngle(0);
+    } else if (phase === 'knockdown') {
+      this.player.setAngle(this.playerState.direction * 90);
+    } else if (phase === 'getup') {
+      const remaining = Phaser.Math.Clamp((this.playerState.until - time) / PLAYER_REACTION.getup, 0, 1);
+      this.player.setAngle(this.playerState.direction * 90 * remaining);
+    }
+  }
+
+  updatePlayerAppearance(time) {
+    const phase = this.playerState.phase;
+    if (phase === 'hurt') this.player.setTintFill(0xff5c5c);
+    else if (phase === 'knockdown' || phase === 'getup') this.player.setTint(0xffc6a3);
+    else if (this.isRageActive()) this.player.setTint(0xff725c);
+    else if (this.isDashing) this.player.setTint(0xc8f7ff);
+    else this.player.clearTint();
+
+    const blinking = time < this.playerState.invulnerableUntil;
+    this.player.setAlpha(blinking && Math.floor(time / 80) % 2 ? 0.5 : 1);
+    this.player.setDepth(this.player.y);
+  }
+
+  isEnemyAlive(enemy) {
+    return Boolean(enemy?.active && !enemy.defeated);
+  }
   updateStageFlow() {
     if (!this.activeEncounter && !this.stageComplete) {
       const next = this.encounters.find(
@@ -410,12 +526,12 @@ class PrototypeScene extends Phaser.Scene {
       if (next) this.startEncounter(next);
     }
 
-    if (this.activeEncounter && !this.waveTransitionPending) {
-      const alive = this.enemies.filter((enemy) => enemy.active).length;
+    if (this.activeEncounter && !this.waveTransitionPending && this.pendingWaveSpawns === 0) {
+      const alive = this.enemies.filter((enemy) => this.isEnemyAlive(enemy)).length;
       if (alive === 0) {
         this.waveTransitionPending = true;
         this.time.delayedCall(650, () => {
-          if (!this.activeEncounter) return;
+          if (this.gameOver || this.stageComplete || !this.activeEncounter) return;
           const nextWaveIndex = this.currentWaveIndex + 1;
           if (nextWaveIndex < this.activeEncounter.waves.length) {
             this.spawnEncounterWave(nextWaveIndex);
@@ -457,10 +573,16 @@ class PrototypeScene extends Phaser.Scene {
 
     this.createBattleBarriers(encounter.cameraX);
     this.areaText.setText(`${encounter.name}：敌袭！`);
-    this.flashComboLabel('战斗区域封锁！');
+    if (encounter.boss) {
+      this.bossCheckpoint = true;
+      this.player.hp = this.player.maxHp;
+      this.flashComboLabel('神将希耶提 · 试炼开始！');
+    } else {
+      this.flashComboLabel('战斗区域封锁！');
+    }
 
     this.time.delayedCall(520, () => {
-      if (!this.activeEncounter) return;
+      if (this.gameOver || this.stageComplete || this.activeEncounter !== encounter) return;
       this.spawnEncounterWave(0);
       this.waveTransitionPending = false;
     });
@@ -491,23 +613,42 @@ class PrototypeScene extends Phaser.Scene {
   }
 
   spawnEncounterWave(index) {
+    const encounter = this.activeEncounter;
+    if (!encounter || this.gameOver || this.stageComplete) return;
+    this.enemies = this.enemies.filter((enemy) => enemy.active);
     this.currentWaveIndex = index;
-    const wave = this.activeEncounter.waves[index];
+    const wave = encounter.waves[index];
+    this.pendingWaveSpawns = wave.length;
     this.areaText.setText(
-      `${this.activeEncounter.name}　第 ${index + 1}/${this.activeEncounter.waves.length} 波`,
+      `${encounter.name}　第 ${index + 1}/${encounter.waves.length} 波`,
     );
-    this.flashComboLabel(`第 ${index + 1} 波！`);
+    if (!encounter.boss) this.flashComboLabel(`第 ${index + 1} 波！`);
 
     wave.forEach((pos, enemyIndex) => {
-      this.time.delayedCall(enemyIndex * 120, () => this.spawnEnemy(pos.x, pos.y, enemyIndex));
+      this.time.delayedCall(enemyIndex * 120, () => {
+        if (this.gameOver || this.stageComplete || this.activeEncounter !== encounter
+          || this.currentWaveIndex !== index) return;
+        this.spawnEnemy(pos.x, pos.y, enemyIndex, pos.kind);
+        this.pendingWaveSpawns -= 1;
+      });
     });
   }
-
-  spawnEnemy(x, y, index = 0) {
-    const enemy = this.physics.add.sprite(x, y, 'enemy');
-    enemy.hp = 6;
-    enemy.maxHp = 6;
-    enemy.speed = 52 + (index % 4) * 7;
+  spawnEnemy(x, y, index = 0, kind = 'raider') {
+    const profile = enemyProfile(kind);
+    const enemy = this.physics.add.sprite(x, y, profile.texture);
+    enemy.kind = kind;
+    enemy.facing = Math.sign(this.player.x - x) || -1;
+    enemy.turnAt = 0;
+    enemy.turnDirection = 0;
+    enemy.guardBrokenUntil = 0;
+    enemy.recoveryUntil = 0;
+    enemy.setFlipX(enemy.facing < 0);
+    enemy.defeated = false;
+    enemy.attackCount = 0;
+    enemy.pendingAttack = null;
+    enemy.hp = profile.hp;
+    enemy.maxHp = profile.hp;
+    enemy.speed = profile.speed + (index % 4) * profile.speedVariation;
     enemy.stunUntil = 0;
     enemy.knockedDownUntil = 0;
     enemy.attackReadyAt = this.time.now + 700 + index * 120;
@@ -519,7 +660,47 @@ class PrototypeScene extends Phaser.Scene {
     enemy.setAlpha(0);
 
     this.tweens.add({ targets: enemy, alpha: 1, duration: 180 });
+    if (profile.boss) {
+      this.enemies.push(enemy);
+      this.setupBoss(enemy);
+      return;
+    }
+    enemy.nameTag = this.add.text(x, y - 63, profile.name, {
+      fontSize: '13px', color: profile.guard ? '#ffe5a3' : '#ffffff',
+      stroke: '#30251c', strokeThickness: 3,
+    }).setOrigin(0.5);
+    enemy.healthBg = this.add.rectangle(x - 23, y - 48, 46, 5, 0x25212b).setOrigin(0, 0.5);
+    enemy.healthBar = this.add.rectangle(x - 22, y - 48, 44, 3, profile.guard ? 0xe2b963 : 0xf49b80)
+      .setOrigin(0, 0.5);
+    enemy.once('destroy', () => this.destroyEnemyUi(enemy));
     this.enemies.push(enemy);
+    if (kind === 'spartan' && !this.spartanIntroduced) {
+      this.spartanIntroduced = true;
+      this.enemyHint.setText('持盾斯巴达登场！K 重击破防 · 绕背攻击 · L 抓取');
+    }
+  }
+
+  destroyEnemyUi(enemy) {
+    ['nameTag', 'healthBg', 'healthBar'].forEach((key) => {
+      enemy[key]?.destroy();
+      enemy[key] = null;
+    });
+  }
+
+  updateEnemyUi(time) {
+    this.enemies.forEach((enemy) => {
+      if (!this.isEnemyAlive(enemy) || !enemy.nameTag) return;
+      const profile = enemyProfile(enemy.kind);
+      const guardLabel = enemyCanGuard(enemy, time) ? ' · 持盾'
+        : enemy.guardBrokenUntil > time ? ' · 破防' : '';
+      enemy.nameTag.setText(profile.name + guardLabel).setPosition(enemy.x, enemy.y - 63);
+      enemy.healthBg.setPosition(enemy.x - 23, enemy.y - 48);
+      enemy.healthBar.setPosition(enemy.x - 22, enemy.y - 48);
+      enemy.healthBar.width = 44 * Phaser.Math.Clamp(enemy.hp / enemy.maxHp, 0, 1);
+      [enemy.nameTag, enemy.healthBg, enemy.healthBar].forEach((item) => {
+        item.setDepth(enemy.y + 30).setAlpha(enemy.alpha);
+      });
+    });
   }
 
   completeEncounter() {
@@ -532,6 +713,10 @@ class PrototypeScene extends Phaser.Scene {
     this.lockLeft = 0;
     this.lockRight = WORLD_WIDTH;
     this.destroyBattleBarriers();
+    if (finished.boss) {
+      this.completeStage();
+      return;
+    }
     this.areaText.setText(`${finished.name} 已清理`);
     this.showCenterMessage('区域清理完毕！', '继续向右前进', 1300);
 
@@ -544,9 +729,18 @@ class PrototypeScene extends Phaser.Scene {
 
   completeStage() {
     this.stageComplete = true;
+    this.hideBossUi();
+    this.terminalAnimationAt = this.time.now;
+    this.cancelPlayerAction();
+    this.releaseGrab(false);
+    this.isDashing = false;
     this.player.setVelocity(0, 0);
-    this.showCenterMessage('第一段完成！', '格兰赛法甲板已突破', 999999);
-    this.add.text(WIDTH / 2, 285, '后续：进入主甲板 / 船内区域', {
+    this.player.setAngle(0);
+    this.player.clearTint().setAlpha(1);
+    this.updatePlayerVisual(this.time.now);
+    this.physics.world.pause();
+    this.showCenterMessage('第一段完成！', '击败神将希耶提，格兰赛法甲板已突破', 999999);
+    this.add.text(WIDTH / 2, 285, '按 R 再战神将　·　页面下方可返回完整关卡', {
       fontSize: '20px',
       color: '#fff3cf',
       stroke: '#000000',
@@ -585,18 +779,23 @@ class PrototypeScene extends Phaser.Scene {
   }
 
   updateUi(time) {
-    const alive = this.enemies.filter((enemy) => enemy.active).length;
+    this.updateEnemyUi(time);
+    this.updateBossUi(time);
+    const alive = this.enemies.filter((enemy) => this.isEnemyAlive(enemy)).length;
     const rageActive = time < this.rageUntil;
     const rageLabel = rageActive
       ? `暴怒剩余 ${Math.ceil((this.rageUntil - time) / 1000)} 秒`
       : `怒气 ${Math.round(this.rage)}%`;
     const grabLabel = this.grabbedEnemy?.active ? '\n状态：抓住敌人' : '';
+    const phaseLabels = { hurt: '受击硬直', knockdown: '倒地', getup: '起身' };
+    const reactionLabel = phaseLabels[this.playerState.phase]
+      ? `\n状态：${phaseLabels[this.playerState.phase]}` : '';
     const battleLabel = this.activeEncounter
       ? `\n当前波次 ${this.currentWaveIndex + 1}/${this.activeEncounter.waves.length}`
       : '';
 
     this.statusText.setText(
-      `生命 ${this.player.hp}/${this.player.maxHp}\n场上敌人 ${alive}\n${rageLabel}${grabLabel}${battleLabel}`,
+      `生命 ${this.player.hp}/${this.player.maxHp}\n场上敌人 ${alive}\n${rageLabel}${grabLabel}${reactionLabel}${battleLabel}`,
     );
     this.rageBar.width = 244 * Phaser.Math.Clamp(this.rage / 100, 0, 1);
     this.rageBar.setFillStyle(rageActive ? 0xff694f : 0xffd43b, 1);
@@ -609,7 +808,14 @@ class PrototypeScene extends Phaser.Scene {
   }
 
   updatePlayerMovement() {
-    if (this.isDashing || this.stageComplete) return;
+    if (!this.canPlayerControl()) return;
+
+    if (this.playerAction) {
+      this.player.facing = this.playerAction.facing;
+      this.stopPlayerMovement();
+      return;
+    }
+    if (this.isDashing) return;
 
     let x = 0;
     let y = 0;
@@ -638,24 +844,95 @@ class PrototypeScene extends Phaser.Scene {
   }
 
   updatePlayerAnimation(moving) {
-    if (!this.player?.usesSpriteArt) return;
-    if (this.time.now < this.playerAttackAnimationUntil) return;
+    if (!this.player?.usesSpriteArt || !canPlayerAct(this.playerState)) return;
+    if (this.playerAction || this.isDashing || this.grabbedEnemy || this.gameOver || this.stageComplete) return;
+    if (!moving && this.isRageActive()) return;
 
     if (moving && this.anims.exists('bii-walk')) {
-      if (this.player.anims.currentAnim?.key !== 'bii-walk') {
+      if (this.player.anims.currentAnim?.key !== 'bii-walk' || !this.player.anims.isPlaying) {
         this.player.play('bii-walk', true);
       }
     } else if (this.anims.exists('bii-idle')) {
-      if (this.player.anims.currentAnim?.key !== 'bii-idle') {
+      if (this.player.anims.currentAnim?.key !== 'bii-idle' || !this.player.anims.isPlaying) {
         this.player.play('bii-idle', true);
       }
     }
   }
 
-  playPunchAnimation() {
-    if (!this.player?.usesSpriteArt || !this.anims.exists('bii-punch')) return;
-    this.playerAttackAnimationUntil = this.time.now + 300;
-    this.player.play('bii-punch', true);
+  updatePlayerVisual(time) {
+    if (!this.player?.usesSpriteArt) return;
+    let name, elapsed;
+    if (this.gameOver || this.stageComplete) {
+      name = this.gameOver ? 'defeat' : 'victory'; elapsed = time - this.terminalAnimationAt;
+    } else if (!canPlayerAct(this.playerState)) {
+      name = this.playerState.phase;
+      elapsed = time - (this.playerState.until - PLAYER_REACTION[name]);
+    } else if (this.playerAction) {
+      name = this.playerAction.name; elapsed = time - this.playerAction.startedAt;
+    } else if (this.isDashing) {
+      name = 'dash'; elapsed = time - this.dashStartedAt;
+    } else if (this.grabbedEnemy) {
+      name = 'grabHold'; elapsed = time;
+    } else if (this.isRageActive() && this.player.body.velocity.x === 0 && this.player.body.velocity.y === 0) {
+      name = 'rageIdle'; elapsed = time;
+    }
+    if (name) {
+      const frame = actionFrame(name, elapsed);
+      if (this.textures.exists(frame.texture)) {
+        this.player.anims.stop();
+        this.player.setTexture(frame.texture, frame.frame).setAngle(0);
+      }
+    } else {
+      this.updatePlayerAnimation(this.player.body.velocity.x !== 0 || this.player.body.velocity.y !== 0);
+    }
+    this.player.setFlipX(this.player.facing < 0);
+  }
+
+  stopPlayerMovement() {
+    const body = this.player.body;
+    body.stop();
+    // Arcade Physics integrates before Scene.update, then moves the sprite in
+    // postUpdate. Discard that pending displacement as well as its velocity.
+    // Sync through the sprite to preserve its scaled body offset and origin.
+    body.updateFromGameObject();
+    body.prev.copy(body.position);
+    body.prevFrame.copy(body.position);
+  }
+
+  beginPlayerAction(name, config = null) {
+    if (!this.canPlayerControl() || this.playerAction) return false;
+    this.isDashing = false;
+    this.dashUntil = 0;
+    this.lastHorizontalTap = { left: -9999, right: -9999 };
+    this.playerAction = createAction(name, this.time.now, this.player.facing, config);
+    this.attackCooldown = this.playerAction.endsAt;
+    this.stopPlayerMovement();
+    this.updatePlayerVisual(this.time.now);
+    return true;
+  }
+
+  cancelPlayerAction() {
+    this.playerAction = null;
+    this.bufferedAttack = null;
+    this.playerAttackAnimationUntil = 0;
+  }
+
+  updatePlayerAction(time) {
+    const action = this.playerAction;
+    if (!action || !this.canPlayerControl()) return;
+    if (time >= action.hitAt && (!action.eventDone || (action.config && time <= action.activeUntil))) {
+      action.eventDone = true;
+      if (action.config) this.doAttack(action.config, action.hitTargets);
+      else if (action.name === 'grab') this.tryGrabEnemy();
+      else if (action.name === 'grabPunch') this.punchGrabbedEnemy();
+      else if (action.name === 'throw') this.throwGrabbedEnemy();
+      else if (action.name === 'release') this.releaseGrab(false);
+    }
+    if (time >= action.endsAt && this.playerAction === action) {
+      this.playerAction = null;
+      this.attackCooldown = time;
+      this.player.setVelocity(0, 0);
+    }
   }
 
   enforcePlayerBounds() {
@@ -700,64 +977,61 @@ class PrototypeScene extends Phaser.Scene {
   }
 
   updateCombat(time) {
-    if (this.stageComplete) return;
-
-    if (
-      Phaser.Input.Keyboard.JustDown(this.keys.SPACE) &&
-      this.rage >= 100 &&
-      !this.isRageActive()
-    ) {
+    // Always consume every edge, including keys pressed while another key wins.
+    const pressed = Object.fromEntries(['J', 'K', 'L', 'SPACE'].map(key => [key, Phaser.Input.Keyboard.JustDown(this.keys[key])]));
+    if (!this.canPlayerControl()) {
+      this.bufferedAttack = null;
+      return;
+    }
+    if (pressed.SPACE && this.rage >= 100 && !this.isRageActive()) {
       this.activateRage();
       return;
     }
-
-    if (Phaser.Input.Keyboard.JustDown(this.keys.L) && time >= this.attackCooldown) {
-      if (this.grabbedEnemy) this.releaseGrab(false);
-      else this.tryGrabEnemy();
+    const attackKey = pressed.K ? 'K' : pressed.J ? 'J' : null;
+    if (this.playerAction) {
+      const comboAction = ['light1', 'light2'].includes(this.playerAction.name);
+      if (attackKey && comboAction && this.playerAction.endsAt - time <= COMBO_INPUT_BUFFER) {
+        // The first eligible input must survive a frame that crosses endsAt.
+        this.bufferedAttack = { key: attackKey, expiresAt: this.playerAction.endsAt + COMBO_INPUT_BUFFER };
+      }
       return;
     }
-
+    if (time < this.attackCooldown) return;
+    let bufferedKey = null;
+    if (this.bufferedAttack) {
+      if (time <= this.bufferedAttack.expiresAt) bufferedKey = this.bufferedAttack.key;
+      this.bufferedAttack = null;
+    }
+    if (pressed.L) {
+      this.comboCount = 0;
+      this.comboExpireAt = 0;
+      this.beginPlayerAction(this.grabbedEnemy ? 'release' : 'grab');
+      return;
+    }
+    const key = attackKey ?? bufferedKey;
+    if (!key) return;
     if (this.grabbedEnemy) {
-      if (Phaser.Input.Keyboard.JustDown(this.keys.J) && time >= this.attackCooldown) {
-        this.punchGrabbedEnemy();
-      }
-      if (Phaser.Input.Keyboard.JustDown(this.keys.K) && time >= this.attackCooldown) {
-        this.throwGrabbedEnemy();
-      }
-      return;
-    }
-
-    if (Phaser.Input.Keyboard.JustDown(this.keys.J) && time >= this.attackCooldown) {
-      if (this.isDashing) this.doDashAttack(false);
-      else this.doLightComboAttack(time);
-    }
-
-    if (Phaser.Input.Keyboard.JustDown(this.keys.K) && time >= this.attackCooldown) {
-      if (this.isDashing) {
-        this.doDashAttack(true);
-      } else if (this.comboCount >= 2 && time <= this.comboExpireAt) {
-        this.doComboFinisher();
-      } else {
-        this.comboCount = 0;
-        this.doAttack({
-          type: 'heavy',
-          damage: 2,
-          range: 108,
-          knockback: 310,
-          stun: 400,
-          cooldown: 470,
-          knockdown: true,
-        });
-      }
+      this.beginPlayerAction(key === 'K' ? 'throw' : 'grabPunch');
+    } else if (this.isDashing) {
+      this.doDashAttack(key === 'K');
+    } else if (key === 'J') {
+      this.doLightComboAttack(time);
+    } else if (this.comboCount >= 2 && time <= this.comboExpireAt) {
+      this.doComboFinisher();
+    } else {
+      this.comboCount = 0;
+      this.beginPlayerAction('heavy', PLAYER_ATTACKS.heavy);
     }
   }
 
   tryGrabEnemy() {
+    if (!this.canPlayerControl()) return;
     let target = null;
     let bestDistance = Infinity;
 
     this.enemies.forEach((enemy) => {
-      if (!enemy.active || enemy.grabbed || enemy.thrownUntil > this.time.now) return;
+      if (!this.isEnemyAlive(enemy) || enemyProfile(enemy.kind).boss
+        || enemy.grabbed || enemy.thrownUntil > this.time.now) return;
       if (enemy.knockedDownUntil > this.time.now) return;
 
       const dx = enemy.x - this.player.x;
@@ -773,7 +1047,7 @@ class PrototypeScene extends Phaser.Scene {
 
     if (!target) {
       this.flashComboLabel('没有抓到！');
-      this.attackCooldown = this.time.now + 180;
+      this.attackCooldown = this.playerAction?.endsAt ?? (this.time.now + 180);
       return;
     }
 
@@ -782,12 +1056,13 @@ class PrototypeScene extends Phaser.Scene {
     this.player.setVelocity(0, 0);
     this.grabbedEnemy = target;
     this.grabPunchCount = 0;
+    this.cancelEnemyAttack(target);
     target.grabbed = true;
     target.setVelocity(0, 0);
     target.body.enable = false;
     this.comboCount = 0;
     this.comboExpireAt = 0;
-    this.attackCooldown = this.time.now + 220;
+    this.attackCooldown = this.playerAction?.endsAt ?? (this.time.now + 220);
     this.flashComboLabel('抓住了！');
   }
 
@@ -798,11 +1073,10 @@ class PrototypeScene extends Phaser.Scene {
       return;
     }
 
-    this.playPunchAnimation();
     const damage = this.isRageActive() ? 2 : 1;
     enemy.hp -= damage;
     this.grabPunchCount += 1;
-    this.attackCooldown = this.time.now + 230;
+    this.attackCooldown = this.playerAction?.endsAt ?? (this.time.now + 230);
     enemy.setTintFill(0xffffff);
     this.time.delayedCall(70, () => enemy.active && enemy.clearTint());
     this.cameras.main.shake(45, 0.0035);
@@ -834,7 +1108,7 @@ class PrototypeScene extends Phaser.Scene {
     enemy.knockedDownUntil = enemy.thrownUntil + 950;
     enemy.setVelocity(this.player.facing * (this.isRageActive() ? 800 : 650), -20);
     enemy.setAngularVelocity(this.player.facing * 520);
-    this.attackCooldown = this.time.now + 520;
+    this.attackCooldown = this.playerAction?.endsAt ?? (this.time.now + 520);
     this.grabPunchCount = 0;
     this.flashComboLabel('投掷！');
     this.cameras.main.shake(95, 0.009);
@@ -857,44 +1131,13 @@ class PrototypeScene extends Phaser.Scene {
   }
 
   doLightComboAttack(time) {
-    this.playPunchAnimation();
-
+    if (this.playerAction || !this.canPlayerControl()) return;
     if (time > this.comboExpireAt) this.comboCount = 0;
-    this.comboCount = Phaser.Math.Clamp(this.comboCount + 1, 1, 3);
-    this.comboExpireAt = time + COMBO_WINDOW;
-    const step = this.comboCount;
-
-    if (step === 1) {
-      this.doAttack({
-        type: 'light1',
-        damage: 1,
-        range: 82,
-        knockback: 95,
-        stun: 165,
-        cooldown: 175,
-      });
-    } else if (step === 2) {
-      this.doAttack({
-        type: 'light2',
-        damage: 1,
-        range: 88,
-        knockback: 120,
-        stun: 185,
-        cooldown: 190,
-      });
-    } else {
-      this.doAttack({
-        type: 'light3',
-        damage: 2,
-        range: 98,
-        knockback: 250,
-        stun: 300,
-        cooldown: 260,
-        knockdown: true,
-      });
-      this.comboCount = 0;
-    }
-
+    const step = Phaser.Math.Clamp(this.comboCount + 1, 1, 3);
+    const name = `light${step}`;
+    this.beginPlayerAction(name, PLAYER_ATTACKS[name]);
+    this.comboCount = step === 3 ? 0 : step;
+    this.comboExpireAt = this.playerAction.endsAt + COMBO_WINDOW;
     this.flashComboLabel(step === 3 ? '三连击！' : `${step} 连击`);
   }
 
@@ -902,55 +1145,57 @@ class PrototypeScene extends Phaser.Scene {
     this.comboCount = 0;
     this.comboExpireAt = 0;
     this.flashComboLabel('重拳终结！');
-    this.doAttack({
-      type: 'finisher',
-      damage: 4,
-      range: 124,
-      knockback: 480,
-      stun: 650,
-      cooldown: 600,
-      knockdown: true,
-      shake: 0.011,
-    });
+    this.beginPlayerAction('finisher', PLAYER_ATTACKS.finisher);
   }
 
   doDashAttack(heavy) {
-    this.isDashing = false;
-    this.player.clearTint();
+    this.comboCount = 0;
+    this.comboExpireAt = 0;
     this.flashComboLabel(heavy ? '肌肉碧究极冲撞！' : '冲刺拳！');
-    if (!heavy) this.playPunchAnimation();
-
-    this.doAttack({
-      type: heavy ? 'dashHeavy' : 'dashLight',
-      damage: heavy ? 5 : 2,
-      range: heavy ? 142 : 112,
-      knockback: heavy ? 570 : 350,
-      stun: heavy ? 760 : 420,
-      cooldown: heavy ? 720 : 390,
-      knockdown: true,
-      shake: heavy ? 0.014 : 0.007,
-    });
+    const name = heavy ? 'dashHeavy' : 'dashLight';
+    this.beginPlayerAction(name, PLAYER_ATTACKS[name]);
   }
 
-  doAttack(config) {
+  doAttack(config, hitTargets = new Set()) {
+    if (!this.canPlayerControl()) return;
     const rageMultiplier = this.isRageActive() ? 2 : 1;
     const damage = config.damage * rageMultiplier;
     const knockback = config.knockback * (this.isRageActive() ? 1.45 : 1);
-    this.attackCooldown = this.time.now + config.cooldown;
+    this.attackCooldown = this.playerAction?.endsAt ?? (this.time.now + (config.cooldown ?? PLAYER_ACTIONS[config.type].duration));
 
     const attackX = this.player.x + this.player.facing * Math.max(48, config.range * 0.48);
     const isBig = ['heavy', 'finisher', 'dashHeavy'].includes(config.type);
-    this.spawnHitFlash(attackX, this.player.y, isBig, config.range);
+    if (!this.playerAction?.flashShown) {
+      this.spawnHitFlash(attackX, this.player.y, isBig, config.range);
+      if (this.playerAction) this.playerAction.flashShown = true;
+    }
 
     let hitCount = 0;
     this.enemies.forEach((enemy) => {
-      if (!enemy.active || enemy.grabbed) return;
+      if (!this.isEnemyAlive(enemy) || enemy.grabbed || hitTargets.has(enemy)) return;
 
       const dx = enemy.x - this.player.x;
       const dy = Math.abs(enemy.y - this.player.y);
       const inFront = Math.sign(dx || this.player.facing) === this.player.facing;
       if (!inFront || Math.abs(dx) > config.range || dy > 58) return;
 
+      hitTargets.add(enemy);
+      if (enemyProfile(enemy.kind).boss) {
+        this.hitBoss(enemy, damage, config.type);
+        hitCount += 1;
+        return;
+      }
+      const response = enemyHitResponse(enemy, this.player.x, config.type, this.time.now, this.isRageActive());
+      if (response === 'block') {
+        this.showEnemyFeedback(enemy, '格挡！', '#b7e9ff');
+        this.spawnHitFlash(enemy.x + enemy.facing * 26, enemy.y, false, 18);
+        return;
+      }
+      if (response === 'break') {
+        enemy.guardBrokenUntil = this.time.now + 1600;
+        this.showEnemyFeedback(enemy, '破防！', '#ffe28a');
+      }
+      this.cancelEnemyAttack(enemy);
       hitCount += 1;
       enemy.hp -= damage;
       enemy.stunUntil = this.time.now + config.stun;
@@ -981,6 +1226,16 @@ class PrototypeScene extends Phaser.Scene {
     }
   }
 
+  showEnemyFeedback(enemy, message, color) {
+    const label = this.add.text(enemy.x, enemy.y - 86, message, {
+      fontSize: '21px', fontStyle: 'bold', color, stroke: '#302315', strokeThickness: 4,
+    }).setOrigin(0.5).setDepth(10000);
+    this.tweens.add({
+      targets: label, y: enemy.y - 115, alpha: 0, duration: 650,
+      onComplete: () => label.destroy(),
+    });
+  }
+
   spawnHitFlash(x, y, big = false, width = null) {
     const flash = this.add.rectangle(
       x,
@@ -1002,7 +1257,8 @@ class PrototypeScene extends Phaser.Scene {
   }
 
   knockDownEnemy(enemy, duration) {
-    if (!enemy.active || enemy.grabbed) return;
+    if (!this.isEnemyAlive(enemy) || enemy.grabbed || enemyProfile(enemy.kind).boss) return;
+    this.cancelEnemyAttack(enemy);
     enemy.knockedDownUntil = Math.max(enemy.knockedDownUntil, this.time.now + duration);
     enemy.stunUntil = enemy.knockedDownUntil;
     enemy.setAngle(this.player.facing * 90);
@@ -1010,7 +1266,8 @@ class PrototypeScene extends Phaser.Scene {
   }
 
   knockDownEnemyFromThrow(enemy, direction, duration) {
-    if (!enemy.active) return;
+    if (!this.isEnemyAlive(enemy) || enemyProfile(enemy.kind).boss) return;
+    this.cancelEnemyAttack(enemy);
     enemy.knockedDownUntil = this.time.now + duration;
     enemy.stunUntil = enemy.knockedDownUntil;
     enemy.setAngle(direction * 90);
@@ -1018,7 +1275,12 @@ class PrototypeScene extends Phaser.Scene {
   }
 
   defeatEnemy(enemy, knockback = 280) {
-    if (!enemy.active) return;
+    if (!this.isEnemyAlive(enemy)) return;
+    enemy.defeated = true;
+    this.cancelEnemyAttack(enemy);
+    this.destroyEnemyUi(enemy);
+    enemy.setVelocity(0, 0);
+    enemy.setAngularVelocity(0);
     if (this.grabbedEnemy === enemy) this.grabbedEnemy = null;
 
     enemy.grabbed = false;
@@ -1038,8 +1300,16 @@ class PrototypeScene extends Phaser.Scene {
 
   updateEnemies(time) {
     this.enemies.forEach((enemy) => {
-      if (!enemy.active || enemy.grabbed) return;
+      if (this.gameOver || this.stageComplete || !this.isEnemyAlive(enemy) || enemy.grabbed) return;
       enemy.setDepth(enemy.y);
+      enemy.y = Phaser.Math.Clamp(enemy.y, FLOOR_TOP, FLOOR_BOTTOM);
+      if (this.activeEncounter) {
+        enemy.x = Phaser.Math.Clamp(enemy.x, this.lockLeft, this.lockRight);
+      }
+      if (enemyProfile(enemy.kind).boss) {
+        this.updateBoss(enemy, time);
+        return;
+      }
       if (enemy.thrownUntil > time) return;
 
       if (enemy.thrownUntil > 0 && time >= enemy.thrownUntil) {
@@ -1057,36 +1327,43 @@ class PrototypeScene extends Phaser.Scene {
       if (enemy.angle !== 0) enemy.setAngle(0);
       if (time < enemy.stunUntil) return;
 
+      if (enemy.pendingAttack) {
+        enemy.setVelocity(0, 0);
+        if (time >= enemy.pendingAttack.hitAt) this.resolveEnemyAttack(enemy);
+        return;
+      }
+
+      if (time < enemy.recoveryUntil) {
+        enemy.setVelocity(0, 0);
+        return;
+      }
+
       const dx = this.player.x - enemy.x;
       const dy = this.player.y - enemy.y;
+      turnEnemyToward(enemy, this.player.x, time);
+      enemy.setFlipX(enemy.facing < 0);
       const distance = Phaser.Math.Distance.Between(
-        enemy.x,
-        enemy.y,
-        this.player.x,
-        this.player.y,
+        enemy.x, enemy.y, this.player.x, this.player.y,
       );
 
-      if (distance > 78) {
+      // Align lanes before swinging, even if the diagonal distance is small.
+      if (distance > 78 || Math.abs(dy) > 28) {
         const direction = new Phaser.Math.Vector2(dx, dy).normalize();
         enemy.setVelocity(direction.x * enemy.speed, direction.y * enemy.speed);
-        enemy.setFlipX(dx < 0);
       } else {
         enemy.setVelocity(0, 0);
-        if (time >= enemy.attackReadyAt) {
-          this.enemyAttack(enemy);
-          enemy.attackReadyAt = time + Phaser.Math.Between(950, 1450);
-        }
+        if (time >= enemy.attackReadyAt && dx * enemy.facing >= 0) this.enemyAttack(enemy);
       }
     });
   }
-
   updateThrownEnemies(time) {
+    if (this.gameOver || this.stageComplete) return;
     this.enemies.forEach((thrownEnemy) => {
-      if (!thrownEnemy.active || thrownEnemy.thrownUntil <= time) return;
+      if (!this.isEnemyAlive(thrownEnemy) || thrownEnemy.thrownUntil <= time) return;
       thrownEnemy.setDepth(thrownEnemy.y + 20);
 
       this.enemies.forEach((target) => {
-        if (!target.active || target === thrownEnemy || target.grabbed) return;
+        if (!this.isEnemyAlive(target) || target === thrownEnemy || target.grabbed) return;
         if (thrownEnemy.throwHitTargets.has(target)) return;
 
         const dx = Math.abs(target.x - thrownEnemy.x);
@@ -1094,6 +1371,11 @@ class PrototypeScene extends Phaser.Scene {
         if (dx > 58 || dy > 48) return;
 
         thrownEnemy.throwHitTargets.add(target);
+        if (enemyProfile(target.kind).boss) {
+          this.hitBoss(target, this.isRageActive() ? 4 : 2, 'thrown');
+          this.spawnHitFlash(target.x, target.y, true, 90);
+          return;
+        }
         target.hp -= this.isRageActive() ? 4 : 2;
         target.stunUntil = time + 700;
         target.setTintFill(0xffffff);
@@ -1111,53 +1393,107 @@ class PrototypeScene extends Phaser.Scene {
   }
 
   enemyAttack(enemy) {
-    if (this.time.now < this.player.invulnerableUntil || this.isRageActive()) return;
+    if (this.gameOver || this.stageComplete || !this.isEnemyAlive(enemy)
+      || enemy.grabbed || enemy.pendingAttack) return;
+    if (!canPlayerAct(this.playerState)) return;
 
-    const dx = Math.abs(enemy.x - this.player.x);
-    const dy = Math.abs(enemy.y - this.player.y);
-    if (dx > 88 || dy > 54) return;
+    if (this.time.now < enemy.stunUntil || this.time.now < enemy.knockedDownUntil
+      || this.time.now < enemy.thrownUntil || this.time.now < enemy.recoveryUntil) return;
+    const profile = enemyProfile(enemy.kind);
+    const direction = profile.guard ? enemy.facing : Math.sign(this.player.x - enemy.x) || 1;
+    if ((this.player.x - enemy.x) * direction < 0) return;
+    const heavy = profile.guard || (enemy.attackCount + 1) % 3 === 0;
+    const range = profile.guard ? 100 : heavy ? 110 : 88;
+    const halfHeight = profile.guard ? 36 : heavy ? 40 : 32;
+    const color = heavy ? 0xffc857 : 0xff6666;
+    const marker = this.add.rectangle(
+      enemy.x + direction * range / 2, enemy.y, range, halfHeight * 2, color, 0.16,
+    ).setStrokeStyle(2, color, 0.9).setDepth(enemy.y - 1);
+    const label = this.add.text(enemy.x, enemy.y - 90, profile.guard ? '盾击！' : heavy ? '重击！' : '！', {
+      fontSize: heavy ? '20px' : '26px', color: heavy ? '#ffe28a' : '#ff9b9b',
+      stroke: '#3c2020', strokeThickness: 4,
+    }).setOrigin(0.5).setDepth(enemy.y + 1);
 
-    const direction = Math.sign(this.player.x - enemy.x) || 1;
+    enemy.attackCount += 1;
+    enemy.facing = direction;
+    enemy.setVelocity(0, 0);
+    enemy.setFlipX(direction < 0);
+    enemy.pendingAttack = {
+      x: enemy.x, y: enemy.y, direction, heavy, range, halfHeight,
+      hitAt: this.time.now + (heavy ? profile.heavyWindup : profile.lightWindup), marker, label,
+    };
+    enemy.attackReadyAt = enemy.pendingAttack.hitAt + Phaser.Math.Between(profile.cooldownMin, profile.cooldownMax);
+  }
+
+  cancelEnemyAttack(enemy) {
+    if (!enemy.pendingAttack) return;
+    if (enemy.pendingAttack.markers) enemy.pendingAttack.markers.forEach(marker => marker.destroy());
+    else enemy.pendingAttack.marker.destroy();
+    enemy.pendingAttack.label.destroy();
+    enemy.pendingAttack = null;
+  }
+
+  resolveEnemyAttack(enemy) {
+    const attack = enemy.pendingAttack;
+    if (!attack) return;
+    this.cancelEnemyAttack(enemy);
+    if (this.gameOver || this.stageComplete || !this.isEnemyAlive(enemy) || enemy.grabbed) return;
+    enemy.recoveryUntil = this.time.now + enemyProfile(enemy.kind).recovery;
+
     const flash = this.add.rectangle(
-      enemy.x + direction * 35,
-      enemy.y,
-      58,
-      36,
-      0xff6b6b,
-      0.45,
+      attack.x + attack.direction * attack.range / 2, attack.y,
+      attack.range, attack.halfHeight * 2, attack.heavy ? 0xffc857 : 0xff6b6b, 0.45,
     ).setDepth(9998);
-
     this.tweens.add({
-      targets: flash,
-      alpha: 0,
-      duration: 100,
+      targets: flash, alpha: 0, duration: 100,
       onComplete: () => flash.destroy(),
     });
 
-    this.hurtPlayer(direction);
+    const forwardDistance = (this.player.x - attack.x) * attack.direction;
+    if (forwardDistance < 0 || forwardDistance > attack.range
+      || Math.abs(this.player.y - attack.y) > attack.halfHeight) return;
+    this.hurtPlayer(attack.direction, attack.heavy);
   }
-
-  hurtPlayer(direction) {
-    if (this.time.now < this.player.invulnerableUntil || this.isRageActive()) return;
+  hurtPlayer(direction, knockdown = false) {
+    if (this.gameOver || this.stageComplete || this.isRageActive()) return;
+    if (!applyPlayerHit(this.playerState, this.time.now, { direction, knockdown })) return;
     if (this.grabbedEnemy) this.releaseGrab(true);
 
-    this.player.hp -= 1;
-    this.player.invulnerableUntil = this.time.now + 850;
-    this.player.setTintFill(0xff5c5c);
-    this.player.setVelocity(direction * 220, 0);
-    this.cameras.main.shake(90, 0.009);
+    this.isDashing = false;
+    this.dashUntil = 0;
+    this.lastHorizontalTap = { left: -9999, right: -9999 };
+    this.comboCount = 0;
+    this.comboExpireAt = 0;
+    this.comboText.setText('');
+    this.cancelPlayerAction();
+    this.attackCooldown = this.playerState.until + (knockdown ? PLAYER_REACTION.getup : 0);
+    this.clearCombatPresses();
+    this.player.anims.stop();
+    this.player.hp = Math.max(0, this.player.hp - (knockdown ? 2 : 1));
+    this.player.setVelocity(direction * (knockdown ? 340 : 220), 0);
+    if (knockdown && !this.player.usesSpriteArt) this.player.setAngle(direction * 90);
+    this.cameras.main.shake(knockdown ? 140 : 90, knockdown ? 0.012 : 0.009);
+    this.updatePlayerAppearance(this.time.now);
 
-    this.time.delayedCall(110, () => {
-      if (this.player.active && !this.isRageActive()) this.player.clearTint();
-    });
-
+    this.updatePlayerVisual(this.time.now);
     if (this.player.hp <= 0) this.endGame();
   }
-
   endGame() {
     this.gameOver = true;
+    this.hideBossUi();
+    this.terminalAnimationAt = this.time.now;
+    this.cancelPlayerAction();
+    this.releaseGrab(false);
+    this.isDashing = false;
+    this.enemies.forEach((enemy) => {
+      this.cancelEnemyAttack(enemy);
+      if (enemy.active && enemy.body) enemy.setVelocity(0, 0);
+    });
+    this.physics.world.pause();
+    this.player.setAlpha(1);
     this.player.setVelocity(0, 0);
-    this.player.setAngle(90);
+    this.player.setAngle(this.player.usesSpriteArt ? 0 : 90);
+    this.updatePlayerVisual(this.time.now);
     this.player.setTint(0x777777);
 
     this.add.text(WIDTH / 2, 185, '你被打倒了！', {
@@ -1168,7 +1504,7 @@ class PrototypeScene extends Phaser.Scene {
       strokeThickness: 8,
     }).setOrigin(0.5).setScrollFactor(0).setDepth(32000);
 
-    this.add.text(WIDTH / 2, 245, '按 R 重新开始', {
+    this.add.text(WIDTH / 2, 245, this.bossCheckpoint ? '按 R 满血再战神将' : '按 R 重新开始', {
       fontSize: '23px',
       color: '#ffffff',
       stroke: '#000000',
@@ -1177,9 +1513,14 @@ class PrototypeScene extends Phaser.Scene {
   }
 
   activateRage() {
-    if (this.grabbedEnemy) this.throwGrabbedEnemy();
+    if (!this.canPlayerControl()) return;
+    this.cancelPlayerAction();
+    if (this.grabbedEnemy) this.releaseGrab(true);
+    this.comboCount = 0;
+    this.comboExpireAt = 0;
+    this.beginPlayerAction('rage');
     this.rage = 100;
-    this.rageUntil = this.time.now + RAGE_DURATION;
+    this.rageUntil = this.time.now + PLAYER_ACTIONS.rage.duration + RAGE_DURATION;
     this.player.setTint(0xff725c);
     this.cameras.main.flash(180, 255, 240, 170);
     this.cameras.main.shake(360, 0.015);
@@ -1213,6 +1554,8 @@ class PrototypeScene extends Phaser.Scene {
     });
   }
 }
+
+Object.assign(PrototypeScene.prototype, BOSS_METHODS);
 
 new Phaser.Game({
   type: Phaser.AUTO,
